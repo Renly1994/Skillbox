@@ -19,18 +19,22 @@ jobs:
             platform: mac
             arch: arm64
             artifact: desktop-mac-apple-silicon
+            rollupPackage: "@rollup/rollup-darwin-arm64"
           - os: macos-15-intel
             platform: mac
             arch: x64
             artifact: desktop-mac-intel
+            rollupPackage: "@rollup/rollup-darwin-x64"
           - os: ubuntu-latest
             platform: linux
             arch: ""
             artifact: desktop-linux
+            rollupPackage: "@rollup/rollup-linux-x64-gnu"
           - os: windows-latest
             platform: win
             arch: ""
             artifact: desktop-windows
+            rollupPackage: "@rollup/rollup-win32-x64-msvc"
 
     runs-on: ${{ matrix.os }}
 
@@ -43,6 +47,12 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
+
+      - name: Install platform Rollup binary
+        shell: bash
+        run: |
+          rollup_version="$(node -p "require('./node_modules/rollup/package.json').version")"
+          npm install --no-save --ignore-scripts --package-lock=false "${{ matrix.rollupPackage }}@${rollup_version}"
 
       - name: Remove bun.lock to prevent electron-builder from using bun
         run: rm -f bun.lock
