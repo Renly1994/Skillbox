@@ -1,0 +1,129 @@
+<p align="center">
+  <img src="apps/desktop/resources/icon.svg" width="92" height="92" alt="Skillbox" />
+</p>
+
+<h1 align="center">Skillbox</h1>
+
+<p align="center">一个 Skill，只装一次。</p>
+
+<p align="center">
+  本地优先、无需账号的 Agent Skill 管理工具。<br />
+  扫描、整理、编辑和迁移本机 Skill，并按 Agent 独立控制启用状态。
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Agent-24-f05408" alt="支持 24 个 Agent" />
+  <img src="https://img.shields.io/badge/Skill%20Market-90%2C000%2B-f05408" alt="90,000+ Skill" />
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-29261f" alt="Windows、macOS、Linux" />
+  <img src="https://img.shields.io/badge/license-MIT-29261f" alt="MIT License" />
+</p>
+
+<p align="center">
+  <img src="docs/images/skillbox-overview.png" width="100%" alt="Skillbox 本地 Skill 管理界面" />
+</p>
+
+## 为什么需要 Skillbox
+
+同一个 Skill 往往需要分别复制到 Claude Code、Codex CLI、Cursor 等多个 Agent 目录。设备一多、Skill 一多，很快就会出现重复文件、版本不一致和迁移困难。
+
+Skillbox 将本地 Skill 作为母本统一管理：一个 Skill 只保留一份，再按需适配到不同 Agent。所有扫描、编辑、收藏、集合和迁移操作都在本地完成，不依赖用户系统。
+
+## 主要功能
+
+- **统一管理本地 Skill**：扫描全局目录、项目目录和自定义目录，集中查看与编辑 `SKILL.md`
+- **按 Agent 独立启用**：同一个 Skill 可一键适配到多个 Agent，开关点击后立即生效
+- **批量整理**：支持多选、收藏、集合，以及批量适配到指定 Agent
+- **迁移包导入导出**：按全局、项目或选中范围打包，保留原有 Agent 启用关系
+- **导入预处理**：导入前识别缺失或尚未适配的 Agent，避免直接写入无效目录
+- **90,000+ Skill 市场**：沿用现有市场数据与安装逻辑，支持搜索、分页、收藏和指定 Agent 安装
+- **离线可用**：已安装 Skill、中文描述和本地管理功能无需联网
+
+<p align="center">
+  <img src="docs/images/skillbox-agent-adaptation.png" width="100%" alt="Skillbox 多 Agent 适配" />
+</p>
+
+<p align="center">
+  <img src="docs/images/skillbox-migration.png" width="100%" alt="Skillbox 导入导出迁移" />
+</p>
+
+<p align="center">
+  <img src="docs/images/skillbox-market.png" width="100%" alt="Skillbox 90,000+ Skill 市场" />
+</p>
+
+## 支持的 Agent
+
+当前内置 24 个 Agent 适配目标。Skillbox 只显示本机实际检测到的 Agent，并使用项目内置的品牌彩色图标。
+
+<table>
+  <tr>
+    <td align="center" width="25%"><img src="apps/desktop/src/renderer/assets/agent-logos/color/claude-code.png" width="36" alt="Claude Code" /><br /><b>Claude Code</b><br /><code>claude-code</code></td>
+    <td align="center" width="25%"><img src="apps/desktop/src/renderer/assets/agent-logos/color/cursor.png" width="36" alt="Cursor" /><br /><b>Cursor</b><br /><code>cursor</code></td>
+    <td align="center" width="25%"><img src="apps/desktop/src/renderer/assets/agent-logos/color/github-copilot.png" width="36" alt="GitHub Copilot" /><br /><b>GitHub Copilot</b><br /><code>github-copilot</code></td>
+    <td align="center" width="25%"><img src="apps/desktop/src/renderer/assets/agent-logos/color/windsurf.png" width="36" alt="Windsurf" /><br /><b>Windsurf</b><br /><code>windsurf</code></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/cline.png" width="36" alt="Cline" /><br /><b>Cline</b><br /><code>cline</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/continue.png" width="36" alt="Continue" /><br /><b>Continue</b><br /><code>continue</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/codex-cli.png" width="36" alt="Codex CLI" /><br /><b>Codex CLI</b><br /><code>codex-cli</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/workbuddy.png" width="36" alt="WorkBuddy" /><br /><b>WorkBuddy</b><br /><code>workbuddy</code></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/kimi-code.png" width="36" alt="Kimi Code" /><br /><b>Kimi Code</b><br /><code>kimi-code</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/deepseek-harness.png" width="36" alt="DeepSeek Harness" /><br /><b>DeepSeek Harness</b><br /><code>deepseek-harness</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/qoderwork.png" width="36" alt="QoderWork" /><br /><b>QoderWork</b><br /><code>qoderwork</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/qoder.png" width="36" alt="Qoder CLI" /><br /><b>Qoder CLI</b><br /><code>qoder</code></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/trae.png" width="36" alt="TRAE" /><br /><b>TRAE</b><br /><code>trae</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/droid-cli.png" width="36" alt="Droid CLI" /><br /><b>Droid CLI</b><br /><code>droid-cli</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/ob-1.png" width="36" alt="OB-1" /><br /><b>OB-1</b><br /><code>ob-1</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/amp.png" width="36" alt="Amp" /><br /><b>Amp</b><br /><code>amp</code></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/goose.png" width="36" alt="Goose" /><br /><b>Goose</b><br /><code>goose</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/junie.png" width="36" alt="Junie" /><br /><b>Junie</b><br /><code>junie</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/kilo-code.png" width="36" alt="Kilo Code" /><br /><b>Kilo Code</b><br /><code>kilo-code</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/opencode.png" width="36" alt="OpenCode" /><br /><b>OpenCode</b><br /><code>opencode</code></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/openclaw.png" width="36" alt="OpenClaw" /><br /><b>OpenClaw</b><br /><code>openclaw</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/pear-ai.png" width="36" alt="Pear AI" /><br /><b>Pear AI</b><br /><code>pear-ai</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/roo-code.png" width="36" alt="Roo Code" /><br /><b>Roo Code</b><br /><code>roo-code</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/zed.png" width="36" alt="Zed" /><br /><b>Zed</b><br /><code>zed</code></td>
+  </tr>
+</table>
+
+此外，Skillbox 支持将 `~/.agents/skills` 作为跨 Agent 共用的 **通用 Skill 目录**。
+
+## 下载安装
+
+前往 [Releases](../../releases/latest) 下载对应平台的安装包：
+
+- Windows：NSIS 安装包
+- macOS：Apple 芯片与 Intel 芯片分别构建
+- Linux：AppImage 与 Debian 安装包
+
+macOS 安装包由 GitHub Actions 构建，不需要本地 Mac。未配置 Apple 签名证书时，首次启动可能需要在系统设置中手动允许。
+
+## 本地开发
+
+环境要求：Node.js 18+。
+
+```bash
+npm install
+npm run dev --workspace=@skillsgate/desktop
+```
+
+构建桌面端：
+
+```bash
+npm run build --workspace=@skillsgate/desktop
+```
+
+项目使用 npm workspaces。桌面端位于 `apps/desktop`，Skill 安装与发现逻辑位于 `packages/cli`。
+
+完整的桌面端发布流程见 [docs/desktop-release.md](docs/desktop-release.md)。
+
+## 开源协议
+
+[MIT](LICENSE)

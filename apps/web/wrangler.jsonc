@@ -1,0 +1,49 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "skillsgate",
+	"main": "worker.ts",
+	"compatibility_date": "2025-12-01",
+	"compatibility_flags": [
+		"nodejs_compat",
+		"global_fetch_strictly_public"
+	],
+	"assets": {
+		"binding": "ASSETS",
+		"directory": "build/client"
+	},
+	"hyperdrive": [
+		{
+			"binding": "HYPERDRIVE",
+			"id": "a7e64ebf303b48599a157bc62b37e67f",
+			"localConnectionString": "postgresql://user:password@localhost:5432/skillsgate"
+		}
+	],
+	"observability": {
+		"enabled": true
+	},
+	"vars": {
+		"APP_URL": "https://skillsgate.ai"
+	},
+	"define": {
+		"import.meta.url": "\"file:///worker.js\""
+	},
+	"ratelimits": [
+		{
+			"name": "DEVICE_EXCHANGE_LIMITER",
+			"namespace_id": "12",
+			"simple": { "limit": 10, "period": 60 }
+		}
+	],
+	"routes": [
+		{
+			"pattern": "openskills.sh",
+			"zone_name": "openskills.sh",
+			"custom_domain": true
+		},
+		{
+			"pattern": "skillsgate.ai",
+			"zone_name": "skillsgate.ai",
+			"custom_domain": true
+		}
+	]
+}

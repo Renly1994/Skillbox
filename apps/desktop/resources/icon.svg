@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Skillbox</title>
+  <rect width="512" height="512" rx="120" fill="#211d15"/>
+  <rect x="100" y="100" width="136" height="136" rx="40" fill="#fbf9f4"/>
+  <rect x="276" y="100" width="136" height="136" rx="40" fill="#e8590c"/>
+  <rect x="100" y="276" width="136" height="136" rx="40" fill="#fbf9f4"/>
+</svg>
