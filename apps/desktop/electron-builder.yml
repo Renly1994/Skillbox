@@ -43,6 +43,7 @@ nsis:
   installerHeaderIcon: resources/icon.ico
 
 linux:
+  icon: resources/icon.png
   target:
     - AppImage
     - deb
