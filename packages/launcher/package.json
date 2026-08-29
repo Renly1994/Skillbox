@@ -1,0 +1,43 @@
+{
+  "name": "skillbox-app",
+  "version": "0.6.1",
+  "description": "Download and install the Skillbox desktop app",
+  "type": "module",
+  "bin": {
+    "skillbox": "bin/skillbox.mjs",
+    "skillbox-app": "bin/skillbox.mjs"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "prepublishOnly": "npm test"
+  },
+  "keywords": [
+    "skillbox",
+    "ai",
+    "agent",
+    "skills",
+    "desktop",
+    "installer"
+  ],
+  "license": "MIT",
+  "author": "Renly1994",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Renly1994/Skillbox.git",
+    "directory": "packages/launcher"
+  },
+  "homepage": "https://github.com/Renly1994/Skillbox#readme",
+  "bugs": {
+    "url": "https://github.com/Renly1994/Skillbox/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  }
+}

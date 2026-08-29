@@ -103,6 +103,12 @@ Skillbox 将本地 Skill 作为母本统一管理：一个 Skill 只保留一份
 - macOS：Apple 芯片与 Intel 芯片分别构建
 - Linux：AppImage 与 Debian 安装包
 
+也可以通过 npm 自动识别平台、下载并打开对应安装包：
+
+```bash
+npx skillbox-app
+```
+
 macOS 安装包由 GitHub Actions 构建，不需要本地 Mac。未配置 Apple 签名证书时，首次启动可能需要在系统设置中手动允许。
 
 ## 本地开发
