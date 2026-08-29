@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Agent-24-f05408" alt="支持 24 个 Agent" />
+  <img src="https://img.shields.io/badge/Agent-39-f05408" alt="支持 39 个 Agent" />
   <img src="https://img.shields.io/badge/Skill%20Market-90%2C000%2B-f05408" alt="90,000+ Skill" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-29261f" alt="Windows、macOS、Linux" />
   <img src="https://img.shields.io/badge/license-MIT-29261f" alt="MIT License" />
@@ -52,7 +52,7 @@ Skillbox 将本地 Skill 作为母本统一管理：一个 Skill 只保留一份
 
 ## 支持的 Agent
 
-当前内置 24 个 Agent 适配目标。Skillbox 只显示本机实际检测到的 Agent，并使用项目内置的品牌彩色图标。
+当前内置 39 个 Agent 适配目标。Skillbox 只显示本机实际检测到的 Agent，并使用项目内置的品牌彩色图标。
 
 <table>
   <tr>
@@ -90,6 +90,30 @@ Skillbox 将本地 Skill 作为母本统一管理：一个 Skill 只保留一份
     <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/pear-ai.png" width="36" alt="Pear AI" /><br /><b>Pear AI</b><br /><code>pear-ai</code></td>
     <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/roo-code.png" width="36" alt="Roo Code" /><br /><b>Roo Code</b><br /><code>roo-code</code></td>
     <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/zed.png" width="36" alt="Zed" /><br /><b>Zed</b><br /><code>zed</code></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/zcode.svg" width="36" alt="ZCode" /><br /><b>ZCode</b><br /><code>zcode</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/gemini-cli.svg" width="36" alt="Gemini CLI" /><br /><b>Gemini CLI</b><br /><code>gemini-cli</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/qwen-code.svg" width="36" alt="Qwen Code" /><br /><b>Qwen Code</b><br /><code>qwen-code</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/kiro.svg" width="36" alt="Kiro" /><br /><b>Kiro</b><br /><code>kiro</code></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/pi.svg" width="36" alt="Pi" /><br /><b>Pi</b><br /><code>pi</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/codebuddy.svg" width="36" alt="CodeBuddy" /><br /><b>CodeBuddy</b><br /><code>codebuddy</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/minimax-code.svg" width="36" alt="MiniMax Code" /><br /><b>MiniMax Code</b><br /><code>minimax-code</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/comate.svg" width="36" alt="Comate" /><br /><b>Comate</b><br /><code>comate</code></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/lingma.svg" width="36" alt="Lingma" /><br /><b>Lingma</b><br /><code>lingma</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/codearts.svg" width="36" alt="CodeArts" /><br /><b>CodeArts</b><br /><code>codearts</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/hermes-agent.svg" width="36" alt="Hermes" /><br /><b>Hermes</b><br /><code>hermes-agent</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/astrbot.svg" width="36" alt="AstrBot" /><br /><b>AstrBot</b><br /><code>astrbot</code></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/qoder.png" width="36" alt="Qoder CN" /><br /><b>Qoder CN</b><br /><code>qoder-cn</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/trae.png" width="36" alt="TRAE CN" /><br /><b>TRAE CN</b><br /><code>trae-cn</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/trae.png" width="36" alt="TraeCode CLI" /><br /><b>TraeCode CLI</b><br /><code>traecode-cli</code></td>
+    <td></td>
   </tr>
 </table>
 

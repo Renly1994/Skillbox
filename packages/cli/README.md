@@ -1,6 +1,6 @@
 # skillsgate
 
-Install and manage AI agent skills from GitHub. Works with Claude Code, Cursor, Windsurf, GitHub Copilot, and [15+ other agents](#supported-agents).
+Install and manage AI agent skills from GitHub. Works with Claude Code, Cursor, Windsurf, GitHub Copilot, and [35+ other agents](#supported-agents).
 
 ## Install
 
@@ -107,7 +107,7 @@ Project-local installs go into `.agents/skills/` in your project root.
 
 ## Supported agents
 
-claude-code, cursor, github-copilot, windsurf, cline, continue, codex-cli, workbuddy, kimi-code, deepseek-harness, qoderwork, qoder, amp, goose, junie, kilo-code, opencode, openclaw, pear-ai, roo-code, trae, zed
+claude-code, cursor, github-copilot, windsurf, cline, continue, codex-cli, zcode, gemini-cli, qwen-code, kiro, pi, codebuddy, minimax-code, comate, lingma, codearts, hermes-agent, astrbot, workbuddy, kimi-code, deepseek-harness, qoderwork, qoder, qoder-cn, trae, trae-cn, traecode-cli, droid-cli, ob-1, amp, goose, junie, kilo-code, opencode, openclaw, pear-ai, roo-code, zed
 
 ## Options
 

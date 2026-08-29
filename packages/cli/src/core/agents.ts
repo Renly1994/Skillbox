@@ -95,6 +95,102 @@ export const agents: Record<string, AgentConfig> = {
     },
   },
 
+  zcode: {
+    name: "zcode",
+    displayName: "ZCode",
+    skillsDir: ".zcode/skills",
+    globalSkillsDir: path.join(home, ".zcode", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".zcode")),
+  },
+
+  "gemini-cli": {
+    name: "gemini-cli",
+    displayName: "Gemini CLI",
+    skillsDir: ".agents/skills",
+    globalSkillsDir: path.join(home, ".gemini", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".gemini")),
+  },
+
+  "qwen-code": {
+    name: "qwen-code",
+    displayName: "Qwen Code",
+    skillsDir: ".qwen/skills",
+    globalSkillsDir: path.join(home, ".qwen", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".qwen")),
+  },
+
+  kiro: {
+    name: "kiro",
+    displayName: "Kiro",
+    skillsDir: ".kiro/skills",
+    globalSkillsDir: path.join(home, ".kiro", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".kiro")),
+  },
+
+  pi: {
+    name: "pi",
+    displayName: "Pi",
+    skillsDir: ".pi/skills",
+    globalSkillsDir: path.join(home, ".pi", "agent", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".pi", "agent")),
+  },
+
+  codebuddy: {
+    name: "codebuddy",
+    displayName: "CodeBuddy",
+    skillsDir: ".codebuddy/skills",
+    globalSkillsDir: path.join(home, ".codebuddy", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".codebuddy")),
+  },
+
+  "minimax-code": {
+    name: "minimax-code",
+    displayName: "MiniMax Code",
+    skillsDir: ".minimax/skills",
+    globalSkillsDir: path.join(home, ".minimax", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".minimax")),
+  },
+
+  comate: {
+    name: "comate",
+    displayName: "Comate",
+    skillsDir: ".comate/skills",
+    globalSkillsDir: path.join(home, ".comate", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".comate")),
+  },
+
+  lingma: {
+    name: "lingma",
+    displayName: "Lingma",
+    skillsDir: ".lingma/skills",
+    globalSkillsDir: path.join(home, ".lingma", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".lingma")),
+  },
+
+  codearts: {
+    name: "codearts",
+    displayName: "CodeArts",
+    skillsDir: ".codeartsdoer/skills",
+    globalSkillsDir: path.join(home, ".codeartsdoer", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".codeartsdoer")),
+  },
+
+  "hermes-agent": {
+    name: "hermes-agent",
+    displayName: "Hermes",
+    skillsDir: ".hermes/skills",
+    globalSkillsDir: path.join(home, ".hermes", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".hermes")),
+  },
+
+  astrbot: {
+    name: "astrbot",
+    displayName: "AstrBot",
+    skillsDir: "data/skills",
+    globalSkillsDir: path.join(home, ".astrbot", "data", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".astrbot")),
+  },
+
   workbuddy: {
     name: "workbuddy",
     displayName: "WorkBuddy",
@@ -133,6 +229,14 @@ export const agents: Record<string, AgentConfig> = {
     skillsDir: ".qoder/skills",
     globalSkillsDir: path.join(home, ".qoder", "skills"),
     detectInstalled: async () => dirExists(path.join(home, ".qoder")),
+  },
+
+  "qoder-cn": {
+    name: "qoder-cn",
+    displayName: "Qoder CN",
+    skillsDir: ".qoder/skills",
+    globalSkillsDir: path.join(home, ".qoder-cn", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".qoder-cn")),
   },
 
   "droid-cli": {
@@ -228,6 +332,22 @@ export const agents: Record<string, AgentConfig> = {
     skillsDir: ".trae/skills",
     globalSkillsDir: path.join(home, ".trae", "skills"),
     detectInstalled: async () => dirExists(path.join(home, ".trae")),
+  },
+
+  "trae-cn": {
+    name: "trae-cn",
+    displayName: "TRAE CN",
+    skillsDir: ".trae/skills",
+    globalSkillsDir: path.join(home, ".trae-cn", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".trae-cn")),
+  },
+
+  "traecode-cli": {
+    name: "traecode-cli",
+    displayName: "TraeCode CLI",
+    skillsDir: ".traecli/skills",
+    globalSkillsDir: path.join(home, ".traecli", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".traecli")),
   },
 
   zed: {

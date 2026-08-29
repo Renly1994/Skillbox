@@ -20,6 +20,7 @@ import skillboxMark from "../assets/skillbox-mark.svg"
 
 // Map display names to registry keys
 const DISPLAY_NAME_TO_KEY: Record<string, string> = {
+  AstrBot: "astrbot",
   "Claude Code": "claude-code",
   Cursor: "cursor",
   "GitHub Copilot": "github-copilot",
@@ -27,11 +28,23 @@ const DISPLAY_NAME_TO_KEY: Record<string, string> = {
   Cline: "cline",
   Continue: "continue",
   "Codex CLI": "codex-cli",
+  CodeArts: "codearts",
+  CodeBuddy: "codebuddy",
+  Comate: "comate",
+  "Gemini CLI": "gemini-cli",
+  Hermes: "hermes-agent",
+  Kiro: "kiro",
+  Lingma: "lingma",
+  "MiniMax Code": "minimax-code",
+  Pi: "pi",
+  "Qwen Code": "qwen-code",
+  ZCode: "zcode",
   WorkBuddy: "workbuddy",
   "Kimi Code": "kimi-code",
   "DeepSeek Harness": "deepseek-harness",
   QoderWork: "qoderwork",
   "Qoder CLI": "qoder",
+  "Qoder CN": "qoder-cn",
   "Droid CLI": "droid-cli",
   "OB-1": "ob-1",
   Amp: "amp",
@@ -43,6 +56,8 @@ const DISPLAY_NAME_TO_KEY: Record<string, string> = {
   "Pear AI": "pear-ai",
   "Roo Code": "roo-code",
   TRAE: "trae",
+  "TRAE CN": "trae-cn",
+  "TraeCode CLI": "traecode-cli",
   Zed: "zed",
   "Universal (.agents/skills)": "universal",
   "通用 Skill 目录": "universal",
@@ -205,7 +220,7 @@ type SkillScopeFilter = "all" | "global" | "project"
 interface LeftSidebarProps {
   totalSkillCount: number
   favoritesCount: number
-  agentsWithSkills: DetectedAgent[]
+  detectedAgents: DetectedAgent[]
   agentSkillCounts: Record<string, number>
   selectedAgent: string | null
   onSelectAgent: (agent: string | null) => void
@@ -228,7 +243,7 @@ interface LeftSidebarProps {
 function LeftSidebar({
   totalSkillCount,
   favoritesCount,
-  agentsWithSkills,
+  detectedAgents,
   agentSkillCounts,
   selectedAgent,
   onSelectAgent,
@@ -279,11 +294,11 @@ function LeftSidebar({
         </nav>
         </section>
 
-      {agentsWithSkills.length > 0 && (
+      {detectedAgents.length > 0 && (
         <section className="skillbox-nav-section skillbox-agent-section">
           <h3>Agents <span>点击筛选已适配 Skill</span></h3>
           <nav className="flex flex-col gap-1.5">
-            {agentsWithSkills.map((agent) => (
+            {detectedAgents.map((agent) => (
               <button
                 key={agent.name}
                 onClick={() => {
@@ -317,7 +332,9 @@ function LeftSidebar({
               >
                 <AgentLogo name={agent.displayName} shortCode={agent.shortCode} size={25} />
                 <span data-no-localize className="truncate">{agent.displayName}</span>
-                <span className="skillbox-agent-count">
+                <span className={`skillbox-agent-count ${
+                  (agentSkillCounts[agent.displayName] || 0) === 0 ? "is-empty" : ""
+                }`}>
                   {agentSkillCounts[agent.displayName] || 0}
                 </span>
               </button>
@@ -743,10 +760,24 @@ function MiddlePanel({
   }, [showAgentDropdown, showCollectionDropdown])
 
   const viewTitle = selectedAgent || selectedCollection || (activeFilter === "favorites" ? "Favorites" : "All Skills")
-  const agentCount = useMemo(
-    () => new Set(skills.flatMap((skill) => skill.agents)).size,
-    [skills],
-  )
+  // Unique agents that actually carry skills, deduped by registry key. The
+  // universal ~/.agents/skills directory is a shared folder, not an agent,
+  // so it is excluded. Sorted by skill count so the avatar stack leads
+  // with the most relevant agents.
+  const skillAgentKeys = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const skill of skills) {
+      const keys = new Set(skill.agents.map((name) => DISPLAY_NAME_TO_KEY[name] ?? name))
+      keys.delete("universal")
+      for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([key]) => key)
+  }, [skills])
+  const agentCount = skillAgentKeys.length
+  // Show at most this many agent avatars; the rest collapse into a "+N" bubble.
+  const AGENT_AVATAR_LIMIT = 5
 
   return (
     <div className="skillbox-library-panel">
@@ -760,7 +791,24 @@ function MiddlePanel({
           <div className="skillbox-library-stats">
             <span><strong>{scopeCounts.global}</strong> 全局</span>
             <span><strong>{scopeCounts.project}</strong> 项目</span>
-            <span><strong>{agentCount}</strong> Agent</span>
+            <span
+              className="skillbox-library-stats-agents"
+              title={skillAgentKeys
+                .map((key) => agents.find((agent) => agent.name === key)?.displayName ?? key)
+                .join("、")}
+            >
+              <span className="skillbox-library-stats-agents__avatars">
+                {skillAgentKeys.slice(0, AGENT_AVATAR_LIMIT).map((key) => (
+                  <AgentLogo key={key} name={key} size={24} />
+                ))}
+                {agentCount > AGENT_AVATAR_LIMIT && (
+                  <span className="skillbox-library-stats-agents__more">
+                    +{agentCount - AGENT_AVATAR_LIMIT}
+                  </span>
+                )}
+              </span>
+              {agentCount} Agents
+            </span>
           </div>
           <div className="skillbox-header-actions">
             <button
@@ -2464,11 +2512,6 @@ export function Home() {
     return counts
   }, [collections, skills])
 
-  // Only show agents that actually have skills
-  const agentsWithSkills = useMemo(() => {
-    return agents.filter((a) => (agentSkillCounts[a.displayName] || 0) > 0)
-  }, [agents, agentSkillCounts])
-
   // Count favorites that are currently installed (orphan favorites are
   // preserved in the DB but not shown in the sidebar count).
   const installedFavoritesCount = useMemo(
@@ -3088,7 +3131,7 @@ export function Home() {
       <MemoizedLeftSidebar
         totalSkillCount={skills.length}
         favoritesCount={installedFavoritesCount}
-        agentsWithSkills={agentsWithSkills}
+        detectedAgents={agents}
         agentSkillCounts={agentSkillCounts}
         selectedAgent={selectedAgent}
         onSelectAgent={setSelectedAgent}

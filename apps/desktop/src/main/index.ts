@@ -12,6 +12,7 @@ import { registerIpcHandlers, setMainWindow } from "./ipc-handlers"
 import { SkillsFileWatcher } from "./file-watcher"
 import { closeDb } from "./db/index"
 import { initAutoUpdater } from "./auto-updater"
+import { setupCloseBehavior } from "./close-behavior"
 
 // GUI builds on Windows can inherit a closed stdout/stderr pipe. Electron
 // forwards renderer console messages to these streams, and an unhandled EPIPE
@@ -34,6 +35,23 @@ if (process.platform === "win32") {
     app.commandLine.appendSwitch("no-sandbox")
     app.commandLine.appendSwitch("disable-gpu")
   }
+}
+
+// Only allow one running instance. A second launch just focuses (and
+// un-hides) the existing window instead of starting another app.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      if (!mainWindow.isVisible()) mainWindow.show()
+      mainWindow.focus()
+    } else {
+      createWindow()
+    }
+  })
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -138,10 +156,15 @@ function createWindow(): void {
     mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"))
   }
 
+  setupCloseBehavior(mainWindow)
+
   initAutoUpdater(mainWindow)
 }
 
 app.whenReady().then(() => {
+  // Second instance was told to quit — don't open a window here.
+  if (!gotSingleInstanceLock) return
+
   Menu.setApplicationMenu(null)
 
   try {
