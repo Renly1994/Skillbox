@@ -70,6 +70,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("skills:remove-from-agent", skillName, agentName),
   addToAgent: (skillName: string, canonicalPath: string, agentName: string) =>
     ipcRenderer.invoke("skills:add-to-agent", skillName, canonicalPath, agentName),
+  syncAgentCopyToMaster: (skillName: string, agentName: string, agentPath: string) =>
+    ipcRenderer.invoke("skills:sync-agent-copy-to-master", skillName, agentName, agentPath),
 
   // Remote servers
   serversList: () => ipcRenderer.invoke("servers:list"),
@@ -124,6 +126,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Updates
   updatesGetState: () => ipcRenderer.invoke("updates:get-state"),
   updatesCheck: () => ipcRenderer.invoke("updates:check"),
+  updatesDownload: () => ipcRenderer.invoke("updates:download"),
   updatesInstall: () => ipcRenderer.invoke("updates:install"),
   updatesReleaseNotes: () => ipcRenderer.invoke("updates:release-notes"),
   appGetVersion: () => ipcRenderer.invoke("app:get-version"),

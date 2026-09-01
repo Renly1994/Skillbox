@@ -21,6 +21,16 @@ declare global {
       relativePath: string
       size: number
     }>
+    versionMismatches: Array<{
+      agentName: string
+      agentDisplayName: string
+      agentPath: string
+      changes: Array<{
+        relativePath: string
+        kind: "modified" | "only-agent" | "only-master"
+      }>
+      totalChanges: number
+    }>
     source?: string
     sourceType?: string
     installedAt?: string
@@ -195,6 +205,14 @@ declare global {
       canonicalPath: string,
       agentName: string,
     ) => Promise<void>
+    syncAgentCopyToMaster: (
+      skillName: string,
+      agentName: string,
+      agentPath: string,
+    ) => Promise<{
+      previousMasterBackupPath: string
+      sourceCopyBackupPath: string
+    }>
 
     // Remote servers
     serversList: () => Promise<RemoteServer[]>
@@ -258,6 +276,7 @@ declare global {
 
     updatesGetState: () => Promise<UpdateState>
     updatesCheck: () => Promise<UpdateState>
+    updatesDownload: () => Promise<UpdateState>
     updatesInstall: () => Promise<void>
     updatesReleaseNotes: () => Promise<{
       version: string

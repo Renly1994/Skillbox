@@ -56,7 +56,7 @@ export function initAutoUpdater(window: BrowserWindow): void {
 
   initialized = true
 
-  autoUpdater.autoDownload = true
+  autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = true
 
   autoUpdater.on("checking-for-update", () => {
@@ -124,6 +124,22 @@ export async function checkForAppUpdates(): Promise<UpdateState> {
 
   try {
     await autoUpdater.checkForUpdates()
+  } catch (error) {
+    setUpdateState({
+      status: "error",
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  return updateState
+}
+
+export async function downloadAppUpdate(): Promise<UpdateState> {
+  if (!app.isPackaged) return updateState
+  if (updateState.status !== "available") return updateState
+
+  try {
+    await autoUpdater.downloadUpdate()
   } catch (error) {
     setUpdateState({
       status: "error",

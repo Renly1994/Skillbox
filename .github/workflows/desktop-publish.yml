@@ -69,6 +69,30 @@ jobs:
             exit 1
           }
 
+      - name: Verify macOS release credentials
+        if: matrix.platform == 'mac' && startsWith(github.ref, 'refs/tags/desktop-v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+
+          if [[ "${#missing[@]}" -gt 0 ]]; then
+            echo "正式 macOS Release 缺少签名或公证凭据：${missing[*]}"
+            echo "请先在 GitHub Actions Secrets 中配置完整凭据，未签名安装包不会公开发布。"
+            exit 1
+          fi
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
       - name: Build and package desktop app
         shell: bash
         run: |
@@ -154,6 +178,7 @@ jobs:
 
           if [[ -n "${CSC_LINK:-}" ]]; then
             codesign --verify --deep --strict --verbose=2 "$app_path"
+            spctl --assess --type execute --verbose=4 "$app_path"
           fi
 
           if [[ -n "${APPLE_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
@@ -220,12 +245,24 @@ jobs:
             echo "releaseDate: '$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')'"
           } > "$metadata"
 
+      - name: Prepare release notes
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#desktop-v}"
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          test -f "$notes_file"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "notes_file=$notes_file" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: Skillbox v${{ steps.release.outputs.version }}
+          body_path: ${{ steps.release.outputs.notes_file }}
           files: |
             artifacts/*
-          generate_release_notes: true
           draft: false
           make_latest: true
         env:

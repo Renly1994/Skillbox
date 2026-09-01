@@ -98,6 +98,15 @@ const MIGRATIONS: Migration[] = [
       INSERT OR IGNORE INTO schema_version VALUES (4);
     `,
   },
+  {
+    version: 5,
+    up: `
+      ALTER TABLE cached_skills
+      ADD COLUMN version_mismatches TEXT NOT NULL DEFAULT '[]';
+
+      INSERT OR IGNORE INTO schema_version VALUES (5);
+    `,
+  },
 ]
 
 function getCurrentVersion(db: Database.Database): number {

@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Agent-39-f05408" alt="支持 39 个 Agent" />
+  <img src="https://img.shields.io/badge/Agent-42-f05408" alt="支持 42 个 Agent" />
   <img src="https://img.shields.io/badge/Skill%20Market-90%2C000%2B-f05408" alt="90,000+ Skill" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-29261f" alt="Windows、macOS、Linux" />
   <img src="https://img.shields.io/badge/license-MIT-29261f" alt="MIT License" />
@@ -52,7 +52,7 @@ Skillbox 将本地 Skill 作为母本统一管理：一个 Skill 只保留一份
 
 ## 支持的 Agent
 
-当前内置 39 个 Agent 适配目标。Skillbox 只显示本机实际检测到的 Agent，并使用项目内置的品牌彩色图标。
+当前内置 42 个 Agent 适配目标。Skillbox 只显示本机实际检测到的 Agent，并使用项目内置的品牌彩色图标。
 
 <table>
   <tr>
@@ -115,6 +115,12 @@ Skillbox 将本地 Skill 作为母本统一管理：一个 Skill 只保留一份
     <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/trae.png" width="36" alt="TraeCode CLI" /><br /><b>TraeCode CLI</b><br /><code>traecode-cli</code></td>
     <td></td>
   </tr>
+  <tr>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/mimo-code.png" width="36" alt="MiMo Code" /><br /><b>MiMo Code</b><br /><code>mimo-code</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/iflow-cli.png" width="36" alt="iFlow CLI" /><br /><b>iFlow CLI</b><br /><code>iflow-cli</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/catpaw.png" width="36" alt="CatPaw" /><br /><b>CatPaw</b><br /><code>catpaw</code></td>
+    <td></td>
+  </tr>
 </table>
 
 此外，Skillbox 支持将 `~/.agents/skills` 作为跨 Agent 共用的 **通用 Skill 目录**。
@@ -133,7 +139,7 @@ Skillbox 将本地 Skill 作为母本统一管理：一个 Skill 只保留一份
 npx skillbox-app
 ```
 
-macOS 安装包由 GitHub Actions 构建，不需要本地 Mac。未配置 Apple 签名证书时，首次启动可能需要在系统设置中手动允许。
+macOS 安装包由 GitHub Actions 构建，不需要本地 Mac。正式 Release 必须通过 Developer ID 签名和 Apple 公证；无凭据生成的手动测试产物不会用于公开发布。
 
 ## 本地开发
 

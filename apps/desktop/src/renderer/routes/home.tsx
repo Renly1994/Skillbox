@@ -59,6 +59,9 @@ const DISPLAY_NAME_TO_KEY: Record<string, string> = {
   "TRAE CN": "trae-cn",
   "TraeCode CLI": "traecode-cli",
   Zed: "zed",
+  "MiMo Code": "mimo-code",
+  "iFlow CLI": "iflow-cli",
+  CatPaw: "catpaw",
   "Universal (.agents/skills)": "universal",
   "通用 Skill 目录": "universal",
 }
@@ -440,7 +443,6 @@ interface SkillRowProps {
   selectedSkillPath: string | null
   dragSkill: DragSkillPayload | null
   favorites: Set<string>
-  agentsBySkillName: Record<string, string[]>
   onSelectSkill: (skill: InstalledSkill) => void
   onMultiSelectToggle: (skill: InstalledSkill, e: React.MouseEvent) => void
   onToggleFavorite: (skill: InstalledSkill, e: React.MouseEvent) => void
@@ -457,7 +459,6 @@ const SkillListRow = memo(function SkillListRow({
   selectedSkillPath,
   dragSkill,
   favorites,
-  agentsBySkillName,
   onSelectSkill,
   onMultiSelectToggle,
   onToggleFavorite,
@@ -468,7 +469,6 @@ const SkillListRow = memo(function SkillListRow({
   if (!skill) return null
   const isMultiChecked = multiSelected.has(skill.canonicalPath)
   const isFavorited = favorites.has(skill.name)
-  const installedAgents = agentsBySkillName[skill.name.trim().toLowerCase()] || skill.agents
   const category = categorizeSkill(skill.name, skill.description)
 
   return (
@@ -570,7 +570,7 @@ const SkillListRow = memo(function SkillListRow({
           <StarIcon size={13} filled={isFavorited} />
         </span>
         <span className="skillbox-row-agents">
-          <AgentLogoRow agents={installedAgents} size={17} />
+          <AgentLogoRow agents={skill.agents} size={17} />
         </span>
         <span className="skillbox-category-badge">
           <span className="cat-icon" style={{ color: category.color }}>
@@ -601,7 +601,6 @@ interface MiddlePanelProps {
   agents: DetectedAgent[]
   skills: InstalledSkill[]
   filteredSkills: InstalledSkill[]
-  agentsBySkillName: Record<string, string[]>
   searchQuery: string
   onSearchChange: (q: string) => void
   selectedSkillPath: string | null
@@ -649,7 +648,6 @@ function MiddlePanel({
   agents,
   skills,
   filteredSkills,
-  agentsBySkillName,
   searchQuery,
   onSearchChange,
   selectedSkillPath,
@@ -713,7 +711,6 @@ function MiddlePanel({
       selectedSkillPath,
       dragSkill,
       favorites,
-      agentsBySkillName,
       onSelectSkill,
       onMultiSelectToggle,
       onToggleFavorite,
@@ -727,7 +724,6 @@ function MiddlePanel({
       selectedSkillPath,
       dragSkill,
       favorites,
-      agentsBySkillName,
       onSelectSkill,
       onMultiSelectToggle,
       onToggleFavorite,
@@ -1042,8 +1038,7 @@ function MiddlePanel({
                 <div className="skillbox-bulk-menu skillbox-bulk-agent-menu">
                   {agents.filter((agent) => agent.name !== "universal").map((agent) => {
                     const adaptedCount = selectedSkills.filter((skill) =>
-                      (agentsBySkillName[skill.name.trim().toLowerCase()] || skill.agents)
-                        .includes(agent.displayName),
+                      skill.agents.includes(agent.displayName),
                     ).length
                     const allAdapted = adaptedCount === selectedSkills.length
                     return (
@@ -1531,6 +1526,7 @@ function RightPanel({
   const [showRemoveDialog, setShowRemoveDialog] = useState(false)
   const [boundAgents, setBoundAgents] = useState<string[]>(skill?.agents ?? [])
   const [bindingBusy, setBindingBusy] = useState<Set<string>>(new Set())
+  const [versionSyncPath, setVersionSyncPath] = useState<string | null>(null)
   const [bindingError, setBindingError] = useState<string | null>(null)
   const [showBackToTop, setShowBackToTop] = useState(false)
   const editorRef = useRef<SkillEditorHandle | null>(null)
@@ -1694,7 +1690,7 @@ function RightPanel({
   }
 
   const handleAgentToggle = async (agent: DetectedAgent) => {
-    if (!skill || bindingBusy.has(agent.name)) return
+    if (!skill || bindingBusy.has(agent.name) || versionSyncPath !== null) return
     const installed = boundAgents.includes(agent.displayName)
     setBindingError(null)
     setBoundAgents((current) => installed
@@ -1729,6 +1725,25 @@ function RightPanel({
     }
   }
 
+  const handleVersionSync = async (mismatch: InstalledSkill["versionMismatches"][number]) => {
+    if (!skill || bindingBusy.size > 0 || versionSyncPath !== null) return
+    setBindingError(null)
+    setVersionSyncPath(mismatch.agentPath)
+    try {
+      await electronAPI.syncAgentCopyToMaster(
+        skill.name,
+        mismatch.agentName,
+        mismatch.agentPath,
+      )
+      await onSkillChanged()
+    } catch (error) {
+      console.error("Failed to sync agent copy to master:", error)
+      setBindingError(`${mismatch.agentDisplayName} 同步失败，请重试`)
+    } finally {
+      setVersionSyncPath(null)
+    }
+  }
+
   if (!skill) {
     return (
       <div className="flex-1 flex items-center justify-center bg-background">
@@ -1741,6 +1756,11 @@ function RightPanel({
       </div>
     )
   }
+
+  const visibleVersionMismatches = skill.versionMismatches.filter(
+    (mismatch) => boundAgents.includes(mismatch.agentDisplayName),
+  )
+  const versionSyncBusy = versionSyncPath !== null || bindingBusy.size > 0
 
   if (editMode) {
     return (
@@ -1870,32 +1890,81 @@ function RightPanel({
               <div className="skillbox-agent-adapter__head">
                 <div>
                   <strong>Agent 适配</strong>
-                  <span>点击立即生效；关闭最后一个 Agent 后，本地母本仍会保留</span>
+                  <span>开关仅控制是否启用，不会同步独立副本中的修改</span>
                 </div>
                 <small>{adaptableBoundAgents.length}/{adaptableAgents.length}</small>
               </div>
               <div className="skillbox-agent-adapter__grid">
                 {adaptableAgents.map((agent) => {
                   const enabled = boundAgents.includes(agent.displayName)
-                  const busy = bindingBusy.has(agent.name)
+                  const busy = bindingBusy.has(agent.name) || versionSyncPath !== null
+                  const versionMismatch = skill.versionMismatches.find(
+                    (mismatch) => mismatch.agentName === agent.name,
+                  )
                   return (
-                    <button
+                    <div
                       key={agent.name}
-                      type="button"
-                      title={agent.name === "universal" ? "跨 Agent 共享目录：~/.agents/skills" : agent.displayName}
-                      className={`${enabled ? "is-enabled" : ""}${busy ? " is-busy" : ""}`}
-                      onClick={() => handleAgentToggle(agent)}
-                      disabled={busy}
-                      aria-pressed={enabled}
-                      aria-busy={busy}
+                      className={`skillbox-agent-adapter__item${enabled && versionMismatch ? " has-version-mismatch" : ""}`}
                     >
-                      <AgentLogo name={agent.displayName} size={23} />
-                      <span data-no-localize>{agent.displayName}</span>
-                      <i aria-hidden />
-                    </button>
+                      <button
+                        type="button"
+                        title={versionMismatch ? `${agent.displayName}：存在未同步的独立副本` : agent.displayName}
+                        className={`skillbox-agent-adapter__toggle${enabled ? " is-enabled" : ""}${busy ? " is-busy" : ""}`}
+                        onClick={() => handleAgentToggle(agent)}
+                        disabled={busy}
+                        aria-pressed={enabled}
+                        aria-busy={busy}
+                      >
+                        <AgentLogo name={agent.displayName} size={23} />
+                        <span data-no-localize>{agent.displayName}</span>
+                        <i aria-hidden />
+                      </button>
+                    </div>
                   )
                 })}
               </div>
+              {visibleVersionMismatches.length > 0 && (
+                <div className="skillbox-version-mismatches">
+                  {visibleVersionMismatches.map((mismatch) => (
+                    <section key={mismatch.agentPath} className="skillbox-version-diff">
+                      <div className="skillbox-version-diff__head">
+                        <span>
+                          <b><span data-no-localize>{mismatch.agentDisplayName}</span> 中存在未同步的独立副本</b>
+                          <small>{mismatch.totalChanges} 个文件与母版不同</small>
+                        </span>
+                        <button
+                          type="button"
+                          className="skillbox-version-diff__repair"
+                          onClick={() => void handleVersionSync(mismatch)}
+                          disabled={versionSyncBusy}
+                        >
+                          {versionSyncPath === mismatch.agentPath ? "同步中" : "同步至母版"}
+                        </button>
+                      </div>
+                      <ul>
+                        {mismatch.changes.map((change) => (
+                          <li key={`${change.kind}:${change.relativePath}`}>
+                            <span data-no-localize>{change.relativePath}</span>
+                            <small>
+                              {change.kind === "modified"
+                                ? "内容已修改"
+                                : change.kind === "only-master"
+                                  ? "仅母版中存在"
+                                  : "仅该副本中存在"}
+                            </small>
+                          </li>
+                        ))}
+                      </ul>
+                      {mismatch.totalChanges > mismatch.changes.length && (
+                        <p>另有 {mismatch.totalChanges - mismatch.changes.length} 个不同文件未列出</p>
+                      )}
+                      <p className="skillbox-version-diff__explanation">
+                        该副本中的修改当前仅在 <span data-no-localize>{mismatch.agentDisplayName}</span> 中生效。同步至母版后，使用母版的其他 Agent 将自动更新。
+                      </p>
+                    </section>
+                  ))}
+                </div>
+              )}
               {bindingError && (
                 <p role="alert" className="skillbox-agent-adapter__error">{bindingError}</p>
               )}
@@ -2274,15 +2343,7 @@ export function Home() {
     }
     return coverage
   }, [skills])
-  const selectedSkillForDisplay = useMemo(
-    () => selectedSkill
-      ? {
-          ...selectedSkill,
-          agents: agentsBySkillName[selectedSkill.name.trim().toLowerCase()] || selectedSkill.agents,
-        }
-      : null,
-    [agentsBySkillName, selectedSkill],
-  )
+  const selectedSkillForDisplay = selectedSkill
 
   useEffect(() => {
     if (selectedSkillPath && selectedSkill && selectedSkill.canonicalPath !== selectedSkillPath) {
@@ -2453,9 +2514,7 @@ export function Home() {
     }
 
     if (selectedAgent) {
-      result = result.filter((skill) =>
-        (agentsBySkillName[skill.name.trim().toLowerCase()] || skill.agents).includes(selectedAgent),
-      )
+      result = result.filter((skill) => skill.agents.includes(selectedAgent))
     }
 
     if (deferredSearchQuery.trim()) {
@@ -2485,7 +2544,6 @@ export function Home() {
     collections,
     activeFilter,
     favorites,
-    agentsBySkillName,
   ])
 
   const scopeCounts = useMemo<Record<SkillScopeFilter, number>>(() => ({
@@ -2958,8 +3016,7 @@ export function Home() {
   const handleBulkAdaptToAgent = useCallback(async (agent: DetectedAgent) => {
     const selectedSkills = skills.filter((skill) => multiSelected.has(skill.canonicalPath))
     const toAdapt = selectedSkills.filter((skill) =>
-      !(agentsBySkillName[skill.name.trim().toLowerCase()] || skill.agents)
-        .includes(agent.displayName),
+      !skill.agents.includes(agent.displayName),
     )
     if (toAdapt.length === 0) return
 
@@ -2987,7 +3044,7 @@ export function Home() {
     } finally {
       setBulkAgentBusy(null)
     }
-  }, [agentsBySkillName, multiSelected, skills])
+  }, [multiSelected, skills])
 
   // Extend handleCollectionDialogSubmit to also handle pending bulk adds
   const handleCollectionDialogSubmitWrapped = useCallback((name: string) => {
@@ -3157,7 +3214,6 @@ export function Home() {
         agents={agents}
         skills={skills}
         filteredSkills={filteredSkills}
-        agentsBySkillName={agentsBySkillName}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         selectedSkillPath={selectedSkill?.canonicalPath ?? null}

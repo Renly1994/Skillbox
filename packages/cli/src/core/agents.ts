@@ -358,6 +358,30 @@ export const agents: Record<string, AgentConfig> = {
     detectInstalled: async () => dirExists(path.join(configHome, "zed")),
   },
 
+  "mimo-code": {
+    name: "mimo-code",
+    displayName: "MiMo Code",
+    skillsDir: ".mimocode/skills",
+    globalSkillsDir: path.join(configHome, "mimocode", "skills"),
+    detectInstalled: async () => dirExists(path.join(configHome, "mimocode")),
+  },
+
+  "iflow-cli": {
+    name: "iflow-cli",
+    displayName: "iFlow CLI",
+    skillsDir: ".iflow/skills",
+    globalSkillsDir: path.join(home, ".iflow", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".iflow")),
+  },
+
+  catpaw: {
+    name: "catpaw",
+    displayName: "CatPaw",
+    skillsDir: ".catpaw/skills",
+    globalSkillsDir: path.join(home, ".catpaw", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".catpaw")),
+  },
+
   universal: {
     name: "universal",
     displayName: "通用 Skill 目录",

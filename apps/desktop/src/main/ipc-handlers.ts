@@ -19,13 +19,27 @@ import {
 import { testConnection, syncRemoteServer, readRemoteFile, writeRemoteFile } from "./db/ssh"
 import { planPush, applyPush } from "./db/push"
 import type { PushPreview } from "./db/push"
-import { checkForAppUpdates, getUpdateState, quitAndInstallUpdate } from "./auto-updater"
+import {
+  checkForAppUpdates,
+  downloadAppUpdate,
+  getUpdateState,
+  quitAndInstallUpdate,
+} from "./auto-updater"
 import {
   agentRegistry,
   dirExists,
   PROJECT_PROBES,
   type AgentEntry,
 } from "./agent-registry"
+import {
+  compareSkillContents,
+  syncAgentCopyToMaster,
+  type SkillVersionChange,
+} from "./version-sync"
+import {
+  findCustomSkillLocations,
+} from "./custom-skill-scanner"
+import { mergeProjectSkillsIntoGlobal } from "./skill-display-merge"
 
 const home = os.homedir()
 
@@ -45,6 +59,8 @@ async function fileExists(p: string): Promise<boolean> {
 const LOCK_FILE_VERSION = 1
 const LOCK_FILE_PATH = path.join(home, ".agents", ".skill-lock.json")
 const CANONICAL_SKILLS_DIR = path.join(home, ".agents", "skills")
+const DETACHED_AGENT_COPIES_DIR = path.join(home, ".agents", "skillbox-detached")
+const SKILLBOX_BACKUPS_DIR = path.join(home, ".agents", "skillbox-backups")
 
 interface SkillLockEntry {
   source: string
@@ -91,6 +107,23 @@ interface ParsedSkill {
 interface SupportingFile {
   relativePath: string
   size: number
+}
+
+interface SkillVersionMismatch {
+  agentName: string
+  agentDisplayName: string
+  agentPath: string
+  changes: SkillVersionChange[]
+  totalChanges: number
+}
+
+interface AgentSkillBinding {
+  agentName: string
+  agentDisplayName: string
+  agentShortCode: string
+  linkPath: string
+  realPath: string
+  isSymbolicLink: boolean
 }
 
 const CUSTOM_SCAN_PATHS_KEY = "scan.customPaths"
@@ -289,6 +322,7 @@ async function collectSkillsFromRoot(
     projectName: string | null
     hasSupportingFiles: boolean
     supportingFiles: SupportingFile[]
+    versionMismatches: SkillVersionMismatch[]
     source?: string
     sourceType?: string
     installedAt?: string
@@ -307,6 +341,7 @@ async function collectSkillsFromRoot(
     projectName: string | null
     hasSupportingFiles: boolean
     supportingFiles: SupportingFile[]
+    versionMismatches: SkillVersionMismatch[]
     source?: string
     sourceType?: string
     installedAt?: string
@@ -315,26 +350,35 @@ async function collectSkillsFromRoot(
   }> = []
 
   const resolvedRoot = path.resolve(rootPath.replace(/^~(?=$|\/|\\)/, home))
-  async function maybeCollectSkillDir(skillDir: string, scope: "project" | "custom") {
+  async function maybeCollectSkillDir(
+    skillDir: string,
+    scope: "project" | "custom",
+    projectName: string | null,
+    agentName: string | null,
+  ) {
     const skillMdPath = path.join(skillDir, "SKILL.md")
     if (!(await fileExists(skillMdPath))) return
 
-    const canonicalPath = await fs.realpath(skillDir).catch(() => skillDir)
+    const realPath = await fs.realpath(skillDir).catch(() => skillDir)
     const parsed = await parseSkillMd(skillMdPath)
     const folderName = path.basename(skillDir)
     const lockEntry = lock.skills[folderName]
+    const attributedAgent = agentName ? agentRegistry[agentName] : undefined
 
     results.push({
       name: parsed?.name || folderName,
       description: parsed?.description || "",
       path: skillDir,
-      canonicalPath,
-      agents: [],
-      agentShortCodes: [],
+      // 项目位置本身是需要保留的绑定身份；即使它是指向母版的 Junction，
+      // 也不能与全局行共用缓存主键，否则会丢失项目级 Agent 归属。
+      canonicalPath: scope === "project" ? path.resolve(skillDir) : realPath,
+      agents: attributedAgent ? [attributedAgent.displayName] : [],
+      agentShortCodes: attributedAgent ? [attributedAgent.shortCode] : [],
       scope,
-      projectName: scope === "project" ? getProjectNameForPath(skillDir) : null,
+      projectName,
       hasSupportingFiles: false,
       supportingFiles: [],
+      versionMismatches: [],
       source: lockEntry?.source,
       sourceType: lockEntry?.sourceType,
       installedAt: lockEntry?.installedAt,
@@ -343,37 +387,14 @@ async function collectSkillsFromRoot(
     })
   }
 
-  await maybeCollectSkillDir(resolvedRoot, scopeHint)
-
-  let rootEntries: Awaited<ReturnType<typeof fs.readdir>> = []
-  try {
-    rootEntries = await fs.readdir(resolvedRoot, { withFileTypes: true })
-  } catch {
-    return results
-  }
-
-  for (const entry of rootEntries) {
-    if (!entry.isDirectory()) continue
-    const full = path.join(resolvedRoot, entry.name)
-    await maybeCollectSkillDir(full, scopeHint)
-  }
-
-  for (const entry of rootEntries) {
-    if (!entry.isDirectory()) continue
-    const projectRoot = path.join(resolvedRoot, entry.name)
-    for (const probe of PROJECT_PROBES) {
-      const probeDir = path.join(projectRoot, probe.subpath)
-      let entries: Awaited<ReturnType<typeof fs.readdir>> = []
-      try {
-        entries = await fs.readdir(probeDir, { withFileTypes: true })
-      } catch {
-        continue
-      }
-      for (const skillEntry of entries) {
-        if (!skillEntry.isDirectory()) continue
-        await maybeCollectSkillDir(path.join(probeDir, skillEntry.name), "project")
-      }
-    }
+  const locations = await findCustomSkillLocations(resolvedRoot, PROJECT_PROBES)
+  for (const location of locations) {
+    await maybeCollectSkillDir(
+      location.skillDir,
+      location.scope === "custom" ? scopeHint : location.scope,
+      location.projectName,
+      location.agentName,
+    )
   }
 
   return results
@@ -489,6 +510,103 @@ function getAgentKeys(displayNames: string[]): string[] {
   })
 }
 
+function pathsEqual(left: string, right: string): boolean {
+  const normalize = (value: string) => {
+    const resolved = path.resolve(value)
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved
+  }
+  return normalize(left) === normalize(right)
+}
+
+async function moveAgentCopyToBackup(
+  skillName: string,
+  agentName: string,
+  agentPath: string,
+): Promise<string> {
+  const backupRoot = path.join(
+    SKILLBOX_BACKUPS_DIR,
+    agentName,
+    sanitizeName(skillName),
+  )
+  await fs.mkdir(backupRoot, { recursive: true })
+  const backupPath = path.join(
+    backupRoot,
+    `${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID().slice(0, 8)}`,
+  )
+  await fs.rename(agentPath, backupPath)
+  return backupPath
+}
+
+function getDetachedAgentCopyPath(skillName: string, agentName: string): string {
+  return path.join(
+    DETACHED_AGENT_COPIES_DIR,
+    agentName,
+    sanitizeName(skillName),
+  )
+}
+
+async function detachAgentCopy(
+  skillName: string,
+  agentName: string,
+  agentPath: string,
+): Promise<string> {
+  const detachedPath = getDetachedAgentCopyPath(skillName, agentName)
+  if (await dirExists(detachedPath)) {
+    await moveAgentCopyToBackup(skillName, agentName, detachedPath)
+  }
+  await fs.mkdir(path.dirname(detachedPath), { recursive: true })
+  await fs.rename(agentPath, detachedPath)
+  return detachedPath
+}
+
+async function restoreDetachedAgentCopy(
+  skillName: string,
+  agent: AgentEntry,
+): Promise<boolean> {
+  const detachedPath = getDetachedAgentCopyPath(skillName, agent.name)
+  if (!(await dirExists(detachedPath))) return false
+  if (!(await fileExists(path.join(detachedPath, "SKILL.md")))) {
+    throw new Error("暂存的 Agent 副本缺少 SKILL.md，无法恢复")
+  }
+
+  const agentPath = path.join(agent.globalSkillsDir, sanitizeName(skillName))
+  if (await dirExists(agentPath)) {
+    throw new Error("Agent 目录中已存在同名 Skill，无法恢复暂存副本")
+  }
+  await fs.mkdir(agent.globalSkillsDir, { recursive: true })
+  await fs.rename(detachedPath, agentPath)
+  return true
+}
+
+async function findVersionMismatches(
+  masterBinding: AgentSkillBinding | undefined,
+  bindings: AgentSkillBinding[],
+): Promise<SkillVersionMismatch[]> {
+  if (!masterBinding) return []
+
+  const mismatches: SkillVersionMismatch[] = []
+  for (const binding of bindings) {
+    if (binding.agentName === "universal") continue
+    // 位置或链接类型变化不属于“版本未同步”。只有有效文件内容不同才提示。
+    if (pathsEqual(binding.realPath, masterBinding.realPath)) continue
+
+    try {
+      const changes = await compareSkillContents(masterBinding.realPath, binding.realPath)
+      if (changes.length === 0) continue
+      mismatches.push({
+        agentName: binding.agentName,
+        agentDisplayName: binding.agentDisplayName,
+        agentPath: binding.linkPath,
+        changes: changes.slice(0, 100),
+        totalChanges: changes.length,
+      })
+    } catch {
+      // 无法读取属于适配故障，不冒充版本差异。
+    }
+  }
+  return mismatches
+}
+
 /** Detect all installed agents on this machine */
 async function detectAgents(): Promise<DetectedAgentInfo[]> {
   const now = Date.now()
@@ -555,6 +673,7 @@ async function listInstalledSkillsInternal(
     projectName: string | null
     hasSupportingFiles: boolean
     supportingFiles: SupportingFile[]
+    versionMismatches: SkillVersionMismatch[]
     source?: string
     sourceType?: string
     installedAt?: string
@@ -576,6 +695,7 @@ async function listInstalledSkillsInternal(
       projectName: string | null
       hasSupportingFiles: boolean
       supportingFiles: SupportingFile[]
+      versionMismatches: SkillVersionMismatch[]
       source?: string
       sourceType?: string
       installedAt?: string
@@ -583,6 +703,7 @@ async function listInstalledSkillsInternal(
       folderName: string
     }
   >()
+  const bindingsBySkillKey = new Map<string, AgentSkillBinding[]>()
 
   const agentsToScan = opts.agents ?? await getDetectedAgentEntries()
   const globalSkillKey = (name: string) => `global:${name.trim().toLowerCase()}`
@@ -663,6 +784,7 @@ async function listInstalledSkillsInternal(
               projectName: null,
               hasSupportingFiles: false,
               supportingFiles: [],
+              versionMismatches: [],
               source: childLock?.source,
               sourceType: childLock?.sourceType,
               installedAt: childLock?.installedAt,
@@ -682,11 +804,28 @@ async function listInstalledSkillsInternal(
         const skillName = parsed?.name || entry.name
         const skillKey = globalSkillKey(skillName)
         const existing = skillMap.get(skillKey)
+        const bindings = bindingsBySkillKey.get(skillKey) ?? []
+        bindings.push({
+          agentName: agent.name,
+          agentDisplayName: agent.displayName,
+          agentShortCode: agent.shortCode,
+          linkPath: skillDir,
+          realPath: canonicalDir,
+          isSymbolicLink: entry.isSymbolicLink(),
+        })
+        bindingsBySkillKey.set(skillKey, bindings)
 
         if (existing) {
           if (!existing.agents.includes(agent.displayName)) {
             existing.agents.push(agent.displayName)
             existing.agentShortCodes.push(agent.shortCode)
+          }
+          if (agent.name === "universal") {
+            existing.path = skillDir
+            existing.canonicalPath = canonicalDir
+            existing.scope = "global"
+            existing.projectName = null
+            existing.folderName = entry.name
           }
         } else {
           const lockEntry = lock.skills[entry.name]
@@ -701,6 +840,7 @@ async function listInstalledSkillsInternal(
             projectName,
             hasSupportingFiles: false,
             supportingFiles: [],
+            versionMismatches: [],
             source: lockEntry?.source,
             sourceType: lockEntry?.sourceType,
             installedAt: lockEntry?.installedAt,
@@ -714,18 +854,55 @@ async function listInstalledSkillsInternal(
     }
   }
 
+  for (const [skillKey, skill] of skillMap) {
+    const bindings = bindingsBySkillKey.get(skillKey) ?? []
+    const masterBinding = bindings.find((binding) => binding.agentName === "universal")
+    skill.versionMismatches = await findVersionMismatches(masterBinding, bindings)
+  }
+
   if (!opts.skipCustomPaths) {
     ensureStores()
     const customScanPaths = settingsStore?.get<string[]>(CUSTOM_SCAN_PATHS_KEY, []) ?? []
     for (const customPath of customScanPaths) {
       const collected = await collectSkillsFromRoot(customPath, "custom", lock)
       for (const item of collected) {
-        const alreadyIncluded = Array.from(skillMap.values()).some(
-          (skill) => skill.canonicalPath === item.canonicalPath,
-        )
-        if (!alreadyIncluded) {
-          skillMap.set(`path:${item.canonicalPath}`, item)
+        const skillKey = globalSkillKey(item.name)
+        const masterBinding = bindingsBySkillKey
+          .get(skillKey)
+          ?.find((binding) => binding.agentName === "universal")
+
+        if (
+          item.scope === "project" &&
+          masterBinding &&
+          item.agents.length > 0 &&
+          !pathsEqual(item.canonicalPath, masterBinding.realPath)
+        ) {
+          try {
+            const changes = await compareSkillContents(
+              masterBinding.realPath,
+              item.canonicalPath,
+            )
+            if (changes.length > 0) {
+              item.versionMismatches = item.agents.flatMap((displayName) => {
+                const attributedAgent = Object.values(agentRegistry).find(
+                  (agent) => agent.displayName === displayName,
+                )
+                if (!attributedAgent) return []
+                return [{
+                  agentName: attributedAgent.name,
+                  agentDisplayName: attributedAgent.displayName,
+                  agentPath: item.path,
+                  changes: changes.slice(0, 100),
+                  totalChanges: changes.length,
+                }]
+              })
+            }
+          } catch {
+            // 无法完整比对时保留项目位置，但不把读取故障标成“版本未同步”。
+          }
         }
+
+        skillMap.set(`path:${path.resolve(item.path)}`, item)
       }
     }
   }
@@ -738,7 +915,7 @@ type InternalSkill = Awaited<ReturnType<typeof listInstalledSkillsInternal>>[num
 
 /** Strip the internal folderName field before sending to the renderer. */
 function toRendererSkills(skills: InternalSkill[]) {
-  return skills.map(
+  return mergeProjectSkillsIntoGlobal(skills).map(
     ({ folderName: _, ...rest }) => rest,
   ) as Array<Omit<InternalSkill, "folderName">>
 }
@@ -764,6 +941,9 @@ function createSkillsFingerprint(skills: InternalSkill[]): string {
         hasSupportingFiles: skill.hasSupportingFiles,
         supportingFiles: [...skill.supportingFiles].sort((a, b) =>
           a.relativePath.localeCompare(b.relativePath),
+        ),
+        versionMismatches: [...skill.versionMismatches].sort((a, b) =>
+          a.agentName.localeCompare(b.agentName),
         ),
         source: skill.source,
         sourceType: skill.sourceType,
@@ -923,6 +1103,7 @@ async function rescanSingleSkill(changedPath: string): Promise<void> {
   ])
   const agents: string[] = []
   const agentShortCodes: string[] = []
+  const bindings: AgentSkillBinding[] = []
   let resolvedDir: string | null = null
   let linkDir: string | null = null
   let parsed: ParsedSkill | null = null
@@ -932,7 +1113,16 @@ async function rescanSingleSkill(changedPath: string): Promise<void> {
     try {
       const realPath = await fs.realpath(skillDir)
       await fs.stat(realPath)
-      if (!resolvedDir) {
+      const entryStat = await fs.lstat(skillDir)
+      bindings.push({
+        agentName: agent.name,
+        agentDisplayName: agent.displayName,
+        agentShortCode: agent.shortCode,
+        linkPath: skillDir,
+        realPath,
+        isSymbolicLink: entryStat.isSymbolicLink(),
+      })
+      if (!resolvedDir || agent.name === "universal") {
         resolvedDir = realPath
         // Keep the link path (inside an allowed agent directory) as `path`,
         // same contract as listInstalledSkillsInternal.
@@ -949,7 +1139,8 @@ async function rescanSingleSkill(changedPath: string): Promise<void> {
 
   if (resolvedDir && parsed && agents.length > 0) {
     const lockEntry = lock.skills[skillFolderName]
-    const scope = getScopeForPath(resolvedDir)
+    const masterBinding = bindings.find((binding) => binding.agentName === "universal")
+    const scope = masterBinding ? "global" : getScopeForPath(resolvedDir)
     const updatedSkill = {
       name: parsed.name,
       description: parsed.description,
@@ -961,6 +1152,7 @@ async function rescanSingleSkill(changedPath: string): Promise<void> {
       projectName: scope === "project" ? getProjectNameForPath(resolvedDir) : null,
       hasSupportingFiles: false,
       supportingFiles: [] as SupportingFile[],
+      versionMismatches: await findVersionMismatches(masterBinding, bindings),
       source: lockEntry?.source,
       sourceType: lockEntry?.sourceType,
       installedAt: lockEntry?.installedAt,
@@ -1459,7 +1651,9 @@ export function registerIpcHandlers(): void {
       cachedSkillsFingerprint = cachedFingerprint
       lastBroadcastFingerprint = cachedFingerprint
       // Return stale-while-revalidate: send cached data now, rescan later
-      rescanAndCache({ skipCustomPaths: true }).catch((err) => {
+      // 先返回缓存保证启动速度，再在后台完整扫描；项目级副本的 Agent 归属
+      // 与版本差异只有完整扫描才能重新计算，升级后不能依赖用户手动刷新。
+      rescanAndCache().catch((err) => {
         console.error("Background rescan failed:", err)
       })
       return toRendererSkills(cached)
@@ -2527,6 +2721,10 @@ Add your skill instructions here.
     return checkForAppUpdates()
   })
 
+  ipcMain.handle("updates:download", async () => {
+    return downloadAppUpdate()
+  })
+
   ipcMain.handle("updates:install", () => {
     quitAndInstallUpdate()
   })
@@ -2544,7 +2742,7 @@ Add your skill instructions here.
     } | null> => {
       try {
         const res = await fetch(
-          "https://api.github.com/repos/skillsgate/skillsgate/releases/latest",
+          "https://api.github.com/repos/Renly1994/Skillbox/releases/latest",
           { headers: { Accept: "application/vnd.github+json" } },
         )
         if (!res.ok) throw new Error(`GitHub API HTTP ${res.status}`)
@@ -2595,7 +2793,7 @@ Add your skill instructions here.
     shell.showItemInFolder(resolved)
   })
 
-  // Remove skill from a specific agent only (delete symlink, keep canonical)
+  // Disable a skill for one agent. Modified physical copies are detached and restored on re-enable.
   ipcMain.handle("skills:remove-from-agent", async (_, skillName: string, agentName: string) => {
     const safeName = sanitizeName(skillName)
     const agent = agentRegistry[agentName]
@@ -2610,7 +2808,28 @@ Add your skill instructions here.
         await fs.mkdir(CANONICAL_SKILLS_DIR, { recursive: true })
         await fs.cp(skillPath, canonicalDir, { recursive: true })
       }
+      const stat = await fs.lstat(skillPath)
+      if (stat.isSymbolicLink()) {
+        await fs.unlink(skillPath)
+        return { backupPath: null }
+      }
+      if (!stat.isDirectory()) {
+        throw new Error("Agent 适配位置不是 Skill 目录")
+      }
+
+      let hasContentDifference = true
+      try {
+        hasContentDifference = (await compareSkillContents(canonicalDir, skillPath)).length > 0
+      } catch {
+        // 比对失败时优先保留副本，避免关闭开关造成不可恢复的数据丢失。
+      }
+      if (hasContentDifference) {
+        const preservedCopyPath = await detachAgentCopy(safeName, agent.name, skillPath)
+        return { backupPath: null, preservedCopyPath }
+      }
+
       await fs.rm(skillPath, { recursive: true, force: true })
+      return { backupPath: null }
     } catch (err) {
       throw new Error(`Failed to remove: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -2637,10 +2856,39 @@ Add your skill instructions here.
         throw new Error("Access denied: source is not a readable local skill")
       }
 
+      if (await restoreDetachedAgentCopy(safeName, agent)) {
+        return { restoredDetachedCopy: true }
+      }
+
       const result = await installSkillToAgent(sourceDir, safeName, agent)
       if (!result.success) {
         throw new Error(result.error || "Failed to add skill to target agent")
       }
+    },
+  )
+
+  ipcMain.handle(
+    "skills:sync-agent-copy-to-master",
+    async (_event, skillName: string, agentName: string, agentPath: string) => {
+      const agent = agentRegistry[agentName]
+      if (!agent) {
+        throw new Error(`Unknown agent: ${agentName}`)
+      }
+      const safeName = sanitizeName(skillName)
+      const resolvedAgentPath = path.resolve(agentPath)
+      if (
+        !isSkillPathAllowed(resolvedAgentPath) ||
+        !(await fileExists(path.join(resolvedAgentPath, "SKILL.md")))
+      ) {
+        throw new Error("独立副本路径无效或不在已授权的扫描目录中")
+      }
+      return syncAgentCopyToMaster({
+        skillName: safeName,
+        agentName: agent.name,
+        masterPath: path.join(CANONICAL_SKILLS_DIR, safeName),
+        agentPath: resolvedAgentPath,
+        backupRoot: SKILLBOX_BACKUPS_DIR,
+      })
     },
   )
 }

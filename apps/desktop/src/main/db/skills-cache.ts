@@ -17,6 +17,7 @@ interface CachedSkillRow {
   project_name: string | null
   has_supporting_files: number
   supporting_files: string
+  version_mismatches: string
   source: string | null
   source_type: string | null
   installed_at: string | null
@@ -40,6 +41,16 @@ interface InstalledSkillWithFolder {
   projectName: string | null
   hasSupportingFiles: boolean
   supportingFiles: Array<{ relativePath: string; size: number }>
+  versionMismatches: Array<{
+    agentName: string
+    agentDisplayName: string
+    agentPath: string
+    changes: Array<{
+      relativePath: string
+      kind: "modified" | "only-agent" | "only-master"
+    }>
+    totalChanges: number
+  }>
   source?: string
   sourceType?: string
   installedAt?: string
@@ -68,6 +79,10 @@ function rowToSkill(row: CachedSkillRow): InstalledSkillWithFolder {
     hasSupportingFiles: row.has_supporting_files === 1,
     supportingFiles: parseJsonSafe<Array<{ relativePath: string; size: number }>>(
       row.supporting_files,
+      [],
+    ),
+    versionMismatches: parseJsonSafe<InstalledSkillWithFolder["versionMismatches"]>(
+      row.version_mismatches,
       [],
     ),
     source: row.source ?? undefined,
@@ -110,12 +125,14 @@ export function saveCachedSkills(
       canonical_path, folder_name, name, description,
       agents, agent_short_codes, scope, project_name,
       has_supporting_files, supporting_files,
+      version_mismatches,
       source, source_type, installed_at, updated_at,
       file_mod_time, scanned_at
     ) VALUES (
       ?, ?, ?, ?,
       ?, ?, ?, ?,
       ?, ?,
+      ?,
       ?, ?, ?, ?,
       ?, ?
     )
@@ -145,6 +162,7 @@ export function saveCachedSkills(
         skill.projectName ?? null,
         skill.hasSupportingFiles ? 1 : 0,
         JSON.stringify(skill.supportingFiles),
+        JSON.stringify(skill.versionMismatches),
         skill.source ?? null,
         skill.sourceType ?? null,
         skill.installedAt ?? null,

@@ -31,6 +31,9 @@ const PROJECT_PROBES = [
   ".roo-code/skills",
   ".trae/skills",
   ".zed/skills",
+  ".mimocode/skills",
+  ".iflow/skills",
+  ".catpaw/skills",
   ".agents/skills",
 ]
 

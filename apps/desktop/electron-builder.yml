@@ -52,3 +52,5 @@ linux:
 
 publish:
   provider: github
+  owner: Renly1994
+  repo: Skillbox

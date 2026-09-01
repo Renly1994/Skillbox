@@ -35,6 +35,9 @@ import windsurfLogo from "../assets/agent-logos/color/windsurf.png"
 import workbuddyLogo from "../assets/agent-logos/color/workbuddy.png"
 import zcodeLogo from "../assets/agent-logos/color/zcode.svg"
 import zedLogo from "../assets/agent-logos/color/zed.png"
+import mimoCodeLogo from "../assets/agent-logos/color/mimo-code.png"
+import iflowCliLogo from "../assets/agent-logos/color/iflow-cli.png"
+import catpawLogo from "../assets/agent-logos/color/catpaw.png"
 import universalLogo from "../assets/agent-logos/universal.svg"
 import skillboxMark from "../assets/skillbox-mark.svg"
 
@@ -78,6 +81,9 @@ const AGENT_LOGOS: Record<string, string> = {
   "pear-ai": pearAiLogo,
   "roo-code": rooCodeLogo,
   zed: zedLogo,
+  "mimo-code": mimoCodeLogo,
+  "iflow-cli": iflowCliLogo,
+  catpaw: catpawLogo,
   universal: universalLogo,
 }
 
@@ -121,6 +127,9 @@ const DISPLAY_NAME_TO_KEY: Record<string, string> = {
   "TRAE CN": "trae-cn",
   "TraeCode CLI": "traecode-cli",
   Zed: "zed",
+  "MiMo Code": "mimo-code",
+  "iFlow CLI": "iflow-cli",
+  CatPaw: "catpaw",
   "Universal (.agents/skills)": "universal",
   "通用 Skill 目录": "universal",
 }
