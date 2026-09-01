@@ -19,3 +19,20 @@
 - 已是最新版本时不再显示更新内容。
 
 更新不会更改现有 Skill、Agent 适配关系或独立副本。
+
+### macOS 安装说明
+
+当前 macOS 安装包尚未完成 Apple 开发者签名和公证。若首次打开时提示“Skillbox 已损坏，无法打开”，请确认安装包来自本页，然后：
+
+1. 将 `Skillbox.app` 拖入“应用程序”文件夹。
+2. 打开“终端”，执行：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Skillbox.app"
+```
+
+3. 前往“应用程序”，右键点击 Skillbox，选择“打开”。
+
+如果系统提示无法验证开发者，也可以前往“系统设置 → 隐私与安全”，点击“仍要打开”，具体可参考 [Apple 官方说明](https://support.apple.com/102445)。
+
+> 该安装包未经 Apple 签名与公证。请确认安装包来自 Skillbox 官方 GitHub，再执行上述操作。完成正式签名后将不再需要此步骤。

@@ -139,7 +139,20 @@ Skillbox 将本地 Skill 作为母本统一管理：一个 Skill 只保留一份
 npx skillbox-app
 ```
 
-macOS 安装包由 GitHub Actions 构建，不需要本地 Mac。正式 Release 必须通过 Developer ID 签名和 Apple 公证；无凭据生成的手动测试产物不会用于公开发布。
+### macOS 首次安装
+
+当前 macOS 安装包尚未完成 Apple 开发者签名和公证。若首次打开时提示“Skillbox 已损坏，无法打开”，请确认安装包来自本仓库的 [Releases](../../releases/latest)，然后：
+
+1. 将 `Skillbox.app` 拖入“应用程序”文件夹。
+2. 打开“终端”，执行：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Skillbox.app"
+```
+
+3. 前往“应用程序”，右键点击 Skillbox，选择“打开”。
+
+如果系统提示无法验证开发者，也可以前往“系统设置 → 隐私与安全”，点击“仍要打开”，具体可参考 [Apple 官方说明](https://support.apple.com/102445)。该安装包未经 Apple 签名与公证，请勿对非官方来源的文件执行上述命令。完成正式签名后将不再需要此操作。
 
 ## 本地开发
 

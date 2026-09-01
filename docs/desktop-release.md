@@ -26,7 +26,7 @@ git push origin desktop-v0.6.1
 
 ## macOS 签名与公证
 
-通过 `workflow_dispatch` 手动运行时，没有 Apple 凭据仍可生成未签名的 DMG 和 ZIP，仅用于内部测试。正式 `desktop-v*` Tag 发布必须提供完整的 Apple 签名与公证凭据；缺少任一凭据时，macOS 构建会失败，也不会创建公开 Release。
+没有 Apple 凭据时，工作流会生成未签名、未公证的 DMG 和 ZIP。公开发布此类安装包时，必须在 Release 与 README 中说明首次安装方法和安全风险。配置完整凭据后，工作流会自动签名并公证。
 
 首次配置时，需要有效的 Apple Developer Program 会员资格，并创建 `Developer ID Application` 证书。将证书和私钥导出为带密码的 P12 文件，再在 GitHub 仓库的 `Settings → Secrets and variables → Actions` 中配置：
 
@@ -36,6 +36,6 @@ git push origin desktop-v0.6.1
 - `APPLE_APP_SPECIFIC_PASSWORD`：App 专用密码
 - `APPLE_TEAM_ID`：Apple Developer Team ID
 
-不要把证书、私钥或密码提交到仓库。凭据完整时，构建会自动完成签名与 Apple 公证，并使用 `codesign`、Gatekeeper 和 `stapler` 验证产物后才允许发布。
+不要把证书、私钥或密码提交到仓库。凭据完整时，构建会使用 `codesign`、Gatekeeper 和 `stapler` 验证产物。
 
-配置完成后，先通过 `workflow_dispatch` 运行一次测试构建并检查两个 macOS Job 的验证结果。确认通过后，再递增桌面端版本并推送同版本 Tag 发布正式安装包。
+配置完成后，先通过 `workflow_dispatch` 运行一次测试构建并检查两个 macOS Job 的验证结果，再推送正式版本 Tag。
