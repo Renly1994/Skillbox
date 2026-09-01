@@ -32,6 +32,7 @@ mac:
 
 win:
   icon: resources/icon.ico
+  artifactName: "Skillbox-Setup-${version}.${ext}"
   target: nsis
 
 nsis:
