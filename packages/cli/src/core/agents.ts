@@ -7,6 +7,8 @@ import { AGENTS_DIR, SKILLS_SUBDIR } from "../constants.js";
 
 const home = os.homedir();
 const configHome = process.env.XDG_CONFIG_HOME || path.join(home, ".config");
+const openCodeHome = process.env.OPENCODE_CONFIG_DIR || path.join(configHome, "opencode");
+const piAgentHome = process.env.PI_CODING_AGENT_DIR || path.join(home, ".pi", "agent");
 const factoryHome = process.env.FACTORY_HOME || path.join(home, ".factory");
 const ob1Home = process.env.OB1_HOME || path.join(home, ".ob1");
 const kimiCodeHome = process.env.KIMI_CODE_HOME || path.join(home, ".kimi-code");
@@ -19,6 +21,10 @@ async function dirExists(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function anyDirExists(paths: string[]): Promise<boolean> {
+  return (await Promise.all(paths.map(dirExists))).some(Boolean);
 }
 
 // ---------- Agent Registry ----------
@@ -51,17 +57,22 @@ export const agents: Record<string, AgentConfig> = {
     name: "github-copilot",
     displayName: "GitHub Copilot",
     skillsDir: ".github/skills",
-    globalSkillsDir: path.join(configHome, "github-copilot", "skills"),
-    detectInstalled: async () =>
-      dirExists(path.join(configHome, "github-copilot")),
+    globalSkillsDir: path.join(home, ".copilot", "skills"),
+    detectInstalled: async () => anyDirExists([
+      path.join(home, ".copilot"),
+      path.join(configHome, "github-copilot"),
+    ]),
   },
 
   windsurf: {
     name: "windsurf",
     displayName: "Windsurf",
     skillsDir: ".windsurf/skills",
-    globalSkillsDir: path.join(home, ".windsurf", "skills"),
-    detectInstalled: async () => dirExists(path.join(home, ".windsurf")),
+    globalSkillsDir: path.join(home, ".codeium", "windsurf", "skills"),
+    detectInstalled: async () => anyDirExists([
+      path.join(home, ".codeium", "windsurf"),
+      path.join(home, ".windsurf"),
+    ]),
   },
 
   cline: {
@@ -131,8 +142,8 @@ export const agents: Record<string, AgentConfig> = {
     name: "pi",
     displayName: "Pi",
     skillsDir: ".pi/skills",
-    globalSkillsDir: path.join(home, ".pi", "agent", "skills"),
-    detectInstalled: async () => dirExists(path.join(home, ".pi", "agent")),
+    globalSkillsDir: path.join(piAgentHome, "skills"),
+    detectInstalled: async () => dirExists(piAgentHome),
   },
 
   codebuddy: {
@@ -259,16 +270,23 @@ export const agents: Record<string, AgentConfig> = {
     name: "amp",
     displayName: "Amp",
     skillsDir: ".amp/skills",
-    globalSkillsDir: path.join(home, ".amp", "skills"),
-    detectInstalled: async () => dirExists(path.join(home, ".amp")),
+    globalSkillsDir: path.join(configHome, "agents", "skills"),
+    detectInstalled: async () => anyDirExists([
+      path.join(configHome, "amp"),
+      path.join(configHome, "agents"),
+      path.join(home, ".amp"),
+    ]),
   },
 
   goose: {
     name: "goose",
     displayName: "Goose",
     skillsDir: ".goose/skills",
-    globalSkillsDir: path.join(home, ".goose", "skills"),
-    detectInstalled: async () => dirExists(path.join(home, ".goose")),
+    globalSkillsDir: path.join(configHome, "goose", "skills"),
+    detectInstalled: async () => anyDirExists([
+      path.join(configHome, "goose"),
+      path.join(home, ".goose"),
+    ]),
   },
 
   junie: {
@@ -282,17 +300,24 @@ export const agents: Record<string, AgentConfig> = {
   "kilo-code": {
     name: "kilo-code",
     displayName: "Kilo Code",
-    skillsDir: ".kilo-code/skills",
-    globalSkillsDir: path.join(home, ".kilo-code", "skills"),
-    detectInstalled: async () => dirExists(path.join(home, ".kilo-code")),
+    skillsDir: ".kilo/skills",
+    globalSkillsDir: path.join(home, ".kilo", "skills"),
+    detectInstalled: async () => anyDirExists([
+      path.join(home, ".kilo"),
+      path.join(home, ".kilo-code"),
+      path.join(home, ".kilocode"),
+    ]),
   },
 
   opencode: {
     name: "opencode",
     displayName: "OpenCode",
     skillsDir: ".opencode/skills",
-    globalSkillsDir: path.join(home, ".opencode", "skills"),
-    detectInstalled: async () => dirExists(path.join(home, ".opencode")),
+    globalSkillsDir: path.join(openCodeHome, "skills"),
+    detectInstalled: async () => anyDirExists([
+      openCodeHome,
+      path.join(home, ".opencode"),
+    ]),
   },
 
   openclaw: {
@@ -321,9 +346,12 @@ export const agents: Record<string, AgentConfig> = {
   "roo-code": {
     name: "roo-code",
     displayName: "Roo Code",
-    skillsDir: ".roo-code/skills",
-    globalSkillsDir: path.join(home, ".roo-code", "skills"),
-    detectInstalled: async () => dirExists(path.join(home, ".roo-code")),
+    skillsDir: ".roo/skills",
+    globalSkillsDir: path.join(home, ".roo", "skills"),
+    detectInstalled: async () => anyDirExists([
+      path.join(home, ".roo"),
+      path.join(home, ".roo-code"),
+    ]),
   },
 
   trae: {
@@ -353,8 +381,8 @@ export const agents: Record<string, AgentConfig> = {
   zed: {
     name: "zed",
     displayName: "Zed",
-    skillsDir: ".zed/skills",
-    globalSkillsDir: path.join(configHome, "zed", "skills"),
+    skillsDir: ".agents/skills",
+    globalSkillsDir: path.join(home, AGENTS_DIR, SKILLS_SUBDIR),
     detectInstalled: async () => dirExists(path.join(configHome, "zed")),
   },
 

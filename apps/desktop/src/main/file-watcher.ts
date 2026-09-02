@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import os from "node:os"
 import { rescanAndCache, rescanSingleSkill, detectAgents } from "./ipc-handlers"
-import { agentRegistry } from "./agent-registry"
+import { agentRegistry, getAgentGlobalSkillDirectories } from "./agent-registry"
 
 const DEBOUNCE_MS = 500
 const CANONICAL_DIR = path.join(os.homedir(), ".agents", "skills")
@@ -42,12 +42,16 @@ export class SkillsFileWatcher {
     for (const agent of detected) {
       const entry = agentRegistry[agent.name]
       if (!entry) continue
-      try {
-        const realPath = await fs.promises.realpath(entry.globalSkillsDir)
-        dirsToWatch.add(realPath)
-      } catch {
-        // Dir doesn't exist yet -- watch the expected path
-        dirsToWatch.add(entry.globalSkillsDir)
+      for (const skillsDir of getAgentGlobalSkillDirectories(entry)) {
+        try {
+          const realPath = await fs.promises.realpath(skillsDir)
+          dirsToWatch.add(realPath)
+        } catch {
+          // 仅为当前主目录预创建监听路径；旧版兼容目录不存在时不应被重建。
+          if (skillsDir === entry.globalSkillsDir) {
+            dirsToWatch.add(skillsDir)
+          }
+        }
       }
     }
 

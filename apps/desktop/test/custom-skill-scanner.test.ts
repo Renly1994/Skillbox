@@ -76,7 +76,7 @@ test("同一 Skill 的项目 Junction 只显示一次", async () => {
   })
 })
 
-test("不会越过两级项目边界继续扫描", async () => {
+test("可以发现任意层级项目中的 Skill", async () => {
   await withFixture(async (root) => {
     const skillDir = path.join(
       root,
@@ -91,7 +91,46 @@ test("不会越过两级项目边界继续扫描", async () => {
 
     const locations = await findCustomSkillLocations(root, PROBES)
 
-    assert.deepEqual(locations, [])
+    assert.equal(locations.length, 1)
+    assert.equal(locations[0].canonicalPath, await fs.realpath(skillDir))
+    assert.equal(locations[0].scope, "project")
+    assert.equal(locations[0].projectName, "level-three")
+  })
+})
+
+test("可以递归发现自定义目录中的深层独立 Skill", async () => {
+  await withFixture(async (root) => {
+    const skillDir = path.join(root, "collections", "writing", "humanizer-zh")
+    await createSkill(skillDir, "humanizer-zh")
+
+    const locations = await findCustomSkillLocations(root, PROBES)
+
+    assert.equal(locations.length, 1)
+    assert.equal(locations[0].canonicalPath, await fs.realpath(skillDir))
+    assert.equal(locations[0].scope, "custom")
+  })
+})
+
+test("项目内分组目录中的 Skill 保留 Agent 归属", async () => {
+  await withFixture(async (root) => {
+    const skillDir = path.join(
+      root,
+      "project",
+      ".claude",
+      "skills",
+      "team",
+      "review",
+    )
+    await createSkill(skillDir, "review")
+
+    const locations = await findCustomSkillLocations(root, [
+      { subpath: ".claude/skills", agentName: "claude-code" },
+    ])
+
+    assert.equal(locations.length, 1)
+    assert.equal(locations[0].scope, "project")
+    assert.equal(locations[0].agentName, "claude-code")
+    assert.equal(locations[0].projectName, "project")
   })
 })
 

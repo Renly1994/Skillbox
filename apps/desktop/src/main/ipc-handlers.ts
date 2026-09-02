@@ -1,4 +1,4 @@
-import { app, dialog, ipcMain, shell, type BrowserWindow } from "electron"
+import { app, dialog, ipcMain, net, shell, type BrowserWindow } from "electron"
 import os from "node:os"
 import path from "node:path"
 import fs from "node:fs/promises"
@@ -28,6 +28,7 @@ import {
 import {
   agentRegistry,
   dirExists,
+  getAgentGlobalSkillDirectories,
   PROJECT_PROBES,
   type AgentEntry,
 } from "./agent-registry"
@@ -39,7 +40,23 @@ import {
 import {
   findCustomSkillLocations,
 } from "./custom-skill-scanner"
+import { findSkillDirectories } from "./skill-directory-scanner"
 import { mergeProjectSkillsIntoGlobal } from "./skill-display-merge"
+import {
+  acquireGitHubRepository,
+  cleanupMarketplaceTempDirectories,
+} from "./github-repository-download"
+import {
+  isRequestedMarketplaceContent,
+  marketplaceSourceKey,
+  selectMarketplaceSkill,
+} from "./marketplace-install"
+import {
+  MarketplaceInstallTaskStore,
+  marketplaceInstallTaskKey,
+  type MarketplaceInstallStage,
+  type MarketplaceInstallTask,
+} from "./marketplace-install-task"
 
 const home = os.homedir()
 
@@ -177,7 +194,7 @@ async function parseSkillMd(filePath: string): Promise<ParsedSkill | null> {
 function getScopeForPath(resolvedPath: string): "global" | "project" | "custom" {
   const globalRoots = [
     CANONICAL_SKILLS_DIR,
-    ...Object.values(agentRegistry).map((agent) => agent.globalSkillsDir),
+    ...Object.values(agentRegistry).flatMap(getAgentGlobalSkillDirectories),
   ].map((root) => path.resolve(root))
 
   if (globalRoots.some((root) => resolvedPath.startsWith(root))) {
@@ -259,7 +276,9 @@ function clearSupportingFilesCache(skillDir?: string): void {
 function isSkillPathAllowed(resolvedPath: string): boolean {
   if (
     Object.values(agentRegistry).some((agent) =>
-      resolvedPath.startsWith(path.resolve(agent.globalSkillsDir)),
+      getAgentGlobalSkillDirectories(agent).some((skillsDir) =>
+        resolvedPath.startsWith(path.resolve(skillsDir)),
+      ),
     ) ||
     resolvedPath.startsWith(path.resolve(CANONICAL_SKILLS_DIR))
   ) {
@@ -709,111 +728,31 @@ async function listInstalledSkillsInternal(
   const globalSkillKey = (name: string) => `global:${name.trim().toLowerCase()}`
 
   for (const agent of agentsToScan) {
-    const skillsDir = agent.globalSkillsDir
-    try {
-      const entries = await fs.readdir(skillsDir, { withFileTypes: true })
-      for (const entry of entries) {
-        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
-
-        // For symlinks/junctions, resolve the target to verify it still exists
-        // and to serve as the canonical identity, but keep `path` pointing at
-        // the link itself. The link lives inside an allowed agent directory,
-        // while the resolved target can live anywhere (e.g. a previous store
-        // like skill-manager/shared); reporting the target as `path` made the
-        // main process reject its own scan results in isSkillPathAllowed --
-        // reads returned "" and agent adaptation was denied. Reads and copies
-        // through the link work transparently.
-        const skillDir = path.join(skillsDir, entry.name)
-        let canonicalDir = skillDir
-        try {
-          const realPath = await fs.realpath(skillDir)
-          // Check if the resolved path still exists
-          await fs.stat(realPath)
-          canonicalDir = realPath
-        } catch {
-          // Broken symlink or unresolvable - skip
-          continue
-        }
-
-        const skillMdPath = path.join(skillDir, "SKILL.md")
-
-        // A directory without a SKILL.md is not a skill, it is a grouping folder
-        // (e.g. ~/.claude/skills/<group>/<skill>/). This branch used to take it
-        // anyway and fall back to the folder name (parsed?.name || entry.name),
-        // which caused two problems:
-        //   1. a ghost entry in the list that always reports "this skill may not
-        //      have a SKILL.md file" on open -- it genuinely does not have one;
-        //   2. the real skills inside the group were never listed at all.
-        // The custom scan path branch (maybeCollectSkillDir) already skips
-        // directories without a SKILL.md, so align with it here, and descend one
-        // level so grouped skills are still discovered.
-        if (!(await fileExists(skillMdPath))) {
-          // Deliberately not annotated: Awaited<ReturnType<typeof fs.readdir>>
-          // resolves to the Buffer overload, which is exactly what the existing
-          // Dirent<NonSharedBuffer> errors in this file come from. Let TS infer.
-          let nested
-          try {
-            nested = await fs.readdir(skillDir, { withFileTypes: true })
-          } catch {
-            continue
-          }
-          for (const child of nested) {
-            if (!child.isDirectory() && !child.isSymbolicLink()) continue
-            const childDir = path.join(skillDir, child.name)
-            if (!(await fileExists(path.join(childDir, "SKILL.md")))) continue
-            const childParsed = await parseSkillMd(path.join(childDir, "SKILL.md"))
-            const childName = childParsed?.name || child.name
-            const childKey = globalSkillKey(childName)
-            const existingChild = skillMap.get(childKey)
-            if (existingChild) {
-              if (!existingChild.agents.includes(agent.displayName)) {
-                existingChild.agents.push(agent.displayName)
-                existingChild.agentShortCodes.push(agent.shortCode)
-              }
-              continue
-            }
-            const childLock = lock.skills[child.name]
-            skillMap.set(childKey, {
-              name: childName,
-              description: childParsed?.description || "",
-              path: childDir,
-              canonicalPath: childDir,
-              agents: [agent.displayName],
-              agentShortCodes: [agent.shortCode],
-              scope: getScopeForPath(childDir),
-              projectName: null,
-              hasSupportingFiles: false,
-              supportingFiles: [],
-              versionMismatches: [],
-              source: childLock?.source,
-              sourceType: childLock?.sourceType,
-              installedAt: childLock?.installedAt,
-              updatedAt: childLock?.updatedAt,
-              folderName: child.name,
-            })
-          }
-          continue
-        }
-
-        const parsed = await parseSkillMd(skillMdPath)
-        const supportingFiles: SupportingFile[] = []
+    for (const skillsDir of getAgentGlobalSkillDirectories(agent)) {
+      const skillDirectories = await findSkillDirectories(skillsDir)
+      for (const discovered of skillDirectories) {
+        const skillDir = discovered.path
+        const folderName = path.basename(skillDir)
+        const parsed = await parseSkillMd(path.join(skillDir, "SKILL.md"))
         const scope = getScopeForPath(skillDir)
         const projectName =
           scope === "project" ? getProjectNameForPath(skillDir) : null
 
-        const skillName = parsed?.name || entry.name
+        const skillName = parsed?.name || folderName
         const skillKey = globalSkillKey(skillName)
         const existing = skillMap.get(skillKey)
         const bindings = bindingsBySkillKey.get(skillKey) ?? []
-        bindings.push({
-          agentName: agent.name,
-          agentDisplayName: agent.displayName,
-          agentShortCode: agent.shortCode,
-          linkPath: skillDir,
-          realPath: canonicalDir,
-          isSymbolicLink: entry.isSymbolicLink(),
-        })
-        bindingsBySkillKey.set(skillKey, bindings)
+        if (!bindings.some((binding) => binding.agentName === agent.name)) {
+          bindings.push({
+            agentName: agent.name,
+            agentDisplayName: agent.displayName,
+            agentShortCode: agent.shortCode,
+            linkPath: skillDir,
+            realPath: discovered.canonicalPath,
+            isSymbolicLink: discovered.isSymbolicLink,
+          })
+          bindingsBySkillKey.set(skillKey, bindings)
+        }
 
         if (existing) {
           if (!existing.agents.includes(agent.displayName)) {
@@ -822,35 +761,34 @@ async function listInstalledSkillsInternal(
           }
           if (agent.name === "universal") {
             existing.path = skillDir
-            existing.canonicalPath = canonicalDir
+            existing.canonicalPath = discovered.canonicalPath
             existing.scope = "global"
             existing.projectName = null
-            existing.folderName = entry.name
+            existing.folderName = folderName
           }
-        } else {
-          const lockEntry = lock.skills[entry.name]
-          skillMap.set(skillKey, {
-            name: skillName,
-            description: parsed?.description || "",
-            path: skillDir,
-            canonicalPath: canonicalDir,
-            agents: [agent.displayName],
-            agentShortCodes: [agent.shortCode],
-            scope,
-            projectName,
-            hasSupportingFiles: false,
-            supportingFiles: [],
-            versionMismatches: [],
-            source: lockEntry?.source,
-            sourceType: lockEntry?.sourceType,
-            installedAt: lockEntry?.installedAt,
-            updatedAt: lockEntry?.updatedAt,
-            folderName: entry.name,
-          })
+          continue
         }
+
+        const lockEntry = lock.skills[folderName]
+        skillMap.set(skillKey, {
+          name: skillName,
+          description: parsed?.description || "",
+          path: skillDir,
+          canonicalPath: discovered.canonicalPath,
+          agents: [agent.displayName],
+          agentShortCodes: [agent.shortCode],
+          scope,
+          projectName,
+          hasSupportingFiles: false,
+          supportingFiles: [],
+          versionMismatches: [],
+          source: lockEntry?.source,
+          sourceType: lockEntry?.sourceType,
+          installedAt: lockEntry?.installedAt,
+          updatedAt: lockEntry?.updatedAt,
+          folderName,
+        })
       }
-    } catch {
-      // Directory does not exist or is not readable
     }
   }
 
@@ -1109,31 +1047,36 @@ async function rescanSingleSkill(changedPath: string): Promise<void> {
   let parsed: ParsedSkill | null = null
 
   for (const agent of agentsToScan) {
-    const skillDir = path.join(agent.globalSkillsDir, skillFolderName)
-    try {
-      const realPath = await fs.realpath(skillDir)
-      await fs.stat(realPath)
-      const entryStat = await fs.lstat(skillDir)
-      bindings.push({
-        agentName: agent.name,
-        agentDisplayName: agent.displayName,
-        agentShortCode: agent.shortCode,
-        linkPath: skillDir,
-        realPath,
-        isSymbolicLink: entryStat.isSymbolicLink(),
-      })
-      if (!resolvedDir || agent.name === "universal") {
-        resolvedDir = realPath
-        // Keep the link path (inside an allowed agent directory) as `path`,
-        // same contract as listInstalledSkillsInternal.
-        linkDir = skillDir
-        const skillMdPath = path.join(realPath, "SKILL.md")
-        parsed = await parseSkillMd(skillMdPath)
+    for (const skillsDir of getAgentGlobalSkillDirectories(agent)) {
+      const skillDir = path.join(skillsDir, skillFolderName)
+      try {
+        const realPath = await fs.realpath(skillDir)
+        await fs.stat(realPath)
+        const entryStat = await fs.lstat(skillDir)
+        bindings.push({
+          agentName: agent.name,
+          agentDisplayName: agent.displayName,
+          agentShortCode: agent.shortCode,
+          linkPath: skillDir,
+          realPath,
+          isSymbolicLink: entryStat.isSymbolicLink(),
+        })
+        if (!resolvedDir || agent.name === "universal") {
+          resolvedDir = realPath
+          // Keep the link path (inside an allowed agent directory) as `path`,
+          // same contract as listInstalledSkillsInternal.
+          linkDir = skillDir
+          const skillMdPath = path.join(realPath, "SKILL.md")
+          parsed = await parseSkillMd(skillMdPath)
+        }
+        if (!agents.includes(agent.displayName)) {
+          agents.push(agent.displayName)
+          agentShortCodes.push(agent.shortCode)
+        }
+        break
+      } catch {
+        // Not present in this directory
       }
-      agents.push(agent.displayName)
-      agentShortCodes.push(agent.shortCode)
-    } catch {
-      // Not present in this agent
     }
   }
 
@@ -1489,7 +1432,7 @@ function parseTrending(html: string): TrendingSkill[] {
  * Throws on a bad response or an empty parse so callers can fall back.
  */
 async function fetchTrending(): Promise<TrendingSkill[]> {
-  const res = await fetch(SKILLS_SH_TRENDING_URL, {
+  const res = await marketFetch(SKILLS_SH_TRENDING_URL, {
     headers: {
       "User-Agent": "SkillsGate (+https://github.com/skillsgate/skillsgate)",
     },
@@ -1554,6 +1497,28 @@ function buildCliEnv(): NodeJS.ProcessEnv {
   return {
     ...process.env,
     PATH: dedupePathEntries([...currentPath, ...COMMON_BIN_DIRS]),
+  }
+}
+
+async function entryExists(p: string): Promise<boolean> {
+  try {
+    await fs.lstat(p)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const marketFetch = net.fetch.bind(net) as unknown as typeof fetch
+const marketplaceInstallTasks = new MarketplaceInstallTaskStore()
+
+export function hasActiveMarketplaceInstalls(): boolean {
+  return marketplaceInstallTasks.hasRunningTasks()
+}
+
+function broadcastMarketplaceInstallTask(task: MarketplaceInstallTask): void {
+  if (_mainWindow && !_mainWindow.isDestroyed()) {
+    _mainWindow.webContents.send("skills:install-progress", task)
   }
 }
 
@@ -1636,6 +1601,9 @@ function buildNpxInstallCommand(
 
 export function registerIpcHandlers(): void {
   console.log("[ipc] registerIpcHandlers initialized")
+  void cleanupMarketplaceTempDirectories(os.tmpdir()).catch((error) => {
+    console.warn("[marketplace] failed to clean stale downloads", error)
+  })
   // Detect which agents are installed on this machine
   ipcMain.handle("agents:detect", async () => {
     return detectAgents()
@@ -1717,87 +1685,140 @@ export function registerIpcHandlers(): void {
   )
 
   // Install a skill from a source (GitHub owner/repo, URL, or local path)
+  ipcMain.handle("skills:list-install-tasks", () => marketplaceInstallTasks.list())
+  ipcMain.handle("skills:dismiss-install-task", (_event, key: string) => {
+    marketplaceInstallTasks.dismiss(key)
+  })
+
   ipcMain.handle(
     "skills:install",
     async (
       _event,
       source: string,
+      skillId: string,
       agentNames: string[],
       _scope: string,
     ): Promise<
       Array<{ skillName: string; agent: string; success: boolean; error?: string }>
     > => {
+      const failedResult = (error: string) => [{
+        skillName: skillId || source,
+        agent: "unknown",
+        success: false,
+        error,
+      }]
       const parsed = parseSource(source)
       if (!parsed) {
-        return [
-          {
-            skillName: source,
-            agent: "unknown",
-            success: false,
-            error: `Could not parse source: "${source}". Expected owner/repo, GitHub URL, or local path.`,
-          },
-        ]
+        return failedResult("Skill 来源地址无效，请返回市场后重试。")
+      }
+      if (agentNames.length === 0) {
+        return failedResult("请选择至少一个已安装的 Agent。")
       }
 
-      let sourceDir: string
-      let tmpDir: string | null = null
-
-      if (parsed.type === "github") {
-        // Clone repository to temp directory
-        tmpDir = path.join(os.tmpdir(), `skillsgate-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`)
-        const cloneResult = await gitClone(`${parsed.url}.git`, tmpDir)
-        if (!cloneResult.success) {
-          return [
-            {
-              skillName: source,
-              agent: "unknown",
-              success: false,
-              error: `Clone failed: ${cloneResult.error}`,
-            },
-          ]
-        }
-        sourceDir = tmpDir
-      } else {
-        sourceDir = parsed.url
-      }
-
-      // Discover skills in the source
-      const discovered = await discoverSkillsInDir(sourceDir)
-      if (discovered.length === 0) {
-        // Cleanup temp dir
-        if (tmpDir) {
-          await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
-        }
-        return [
-          {
-            skillName: source,
-            agent: "unknown",
-            success: false,
-            error: "No SKILL.md files found in source.",
-          },
-        ]
-      }
-
-      // Determine target agents
       const detected = await detectAgents()
       const detectedNames = new Set(detected.map((agent) => agent.name))
       const targetAgents = getExpandedTargetAgents(agentNames).filter((agent) =>
         detectedNames.has(agent.name),
       )
+      if (targetAgents.length === 0) {
+        return failedResult("请选择至少一个已安装的 Agent。")
+      }
 
-      const results: Array<{
-        skillName: string
-        agent: string
-        success: boolean
-        error?: string
-      }> = []
+      const installKey = marketplaceInstallTaskKey(source, skillId)
+      if (marketplaceInstallTasks.isRunning(installKey)) {
+        return failedResult("该 Skill 正在后台安装，可返回市场查看进度。")
+      }
+      broadcastMarketplaceInstallTask(
+        marketplaceInstallTasks.start(source, skillId, agentNames),
+      )
 
-      const lock = await readSkillLock()
-      const now = new Date().toISOString()
+      const failed = (error: string) => {
+        const task = marketplaceInstallTasks.fail(installKey, error)
+        if (task) broadcastMarketplaceInstallTask(task)
+        return failedResult(error)
+      }
 
-      for (const skill of discovered) {
+      const emitProgress = (
+        stage: Exclude<MarketplaceInstallStage, "failed">,
+        completed = 0,
+        total = 0,
+        downloadedBytes = 0,
+        totalBytes = 0,
+      ) => {
+        const task = marketplaceInstallTasks.update(installKey, {
+          stage,
+          completed,
+          total,
+          downloadedBytes,
+          totalBytes,
+        })
+        if (task) broadcastMarketplaceInstallTask(task)
+      }
+
+      let tmpDir: string | null = null
+      try {
+        emitProgress("preparing")
+        let sourceDir: string
+        let allowSingleSkillFallback = false
+        if (parsed.type === "github") {
+          tmpDir = path.join(os.tmpdir(), `skillsgate-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`)
+          const downloadResult = await acquireGitHubRepository({
+            owner: parsed.owner,
+            repo: parsed.repo,
+            skillId,
+            destination: tmpDir,
+            clone: gitClone,
+            fetchImpl: marketFetch,
+            onProgress: (progress) => emitProgress(
+              progress.stage,
+              progress.completed,
+              progress.total,
+              progress.downloadedBytes,
+              progress.totalBytes,
+            ),
+          })
+          if (!downloadResult.success) {
+            return failed(downloadResult.error)
+          }
+          allowSingleSkillFallback = downloadResult.method === "files"
+          sourceDir = tmpDir
+        } else {
+          sourceDir = parsed.url
+        }
+
+        const discovered = await discoverSkillsInDir(sourceDir)
+        const skill = selectMarketplaceSkill(
+          discovered,
+          sourceDir,
+          skillId,
+          allowSingleSkillFallback,
+        )
+        if (!skill) {
+          return failed("仓库中未找到所选 Skill，请联系发布者检查市场信息。")
+        }
+
+        const safeName = sanitizeName(skill.name)
+        const canonicalDir = path.join(CANONICAL_SKILLS_DIR, safeName)
+        if (await dirExists(canonicalDir)) {
+          return failed("本地已存在同名 Skill，请在技能详情中管理 Agent 适配。")
+        }
+        for (const agent of targetAgents) {
+          const targetDir = path.join(agent.globalSkillsDir, safeName)
+          if (await entryExists(targetDir)) {
+            return failed(
+              `${agent.displayName} 中已存在同名 Skill。为避免覆盖本地修改，请先在技能详情中处理该副本。`,
+            )
+          }
+        }
+
+        emitProgress("installing")
         const skillDir = path.dirname(skill.filePath)
-
+        const results: Array<{
+          skillName: string
+          agent: string
+          success: boolean
+          error?: string
+        }> = []
         for (const agent of targetAgents) {
           const result = await installSkillToAgent(skillDir, skill.name, agent)
           results.push({
@@ -1808,30 +1829,45 @@ export function registerIpcHandlers(): void {
           })
         }
 
-        // Update lock file
-        const safeName = sanitizeName(skill.name)
-        const existing = lock.skills[safeName]
-        lock.skills[safeName] = {
-          source:
-            parsed.type === "github"
-              ? `${parsed.owner}/${parsed.repo}`
-              : parsed.url,
-          sourceType: parsed.type,
-          originalUrl: source,
-          skillFolderHash: "",
-          installedAt: existing?.installedAt || now,
-          updatedAt: now,
+        if (results.some((result) => result.success)) {
+          const lock = await readSkillLock()
+          const now = new Date().toISOString()
+          const existing = lock.skills[safeName]
+          lock.skills[safeName] = {
+            source:
+              parsed.type === "github"
+                ? marketplaceSourceKey(parsed.owner, parsed.repo, skillId)
+                : parsed.url,
+            sourceType: parsed.type,
+            originalUrl: source,
+            skillFolderHash: "",
+            installedAt: existing?.installedAt || now,
+            updatedAt: now,
+          }
+          await writeSkillLock(lock)
+        }
+
+        if (results.every((result) => result.success)) {
+          const task = marketplaceInstallTasks.complete(installKey)
+          if (task) broadcastMarketplaceInstallTask(task)
+        } else {
+          const error = results
+            .filter((result) => !result.success)
+            .map((result) => result.error)
+            .filter(Boolean)
+            .join("，") || "安装到部分 Agent 时失败，请重试。"
+          const task = marketplaceInstallTasks.fail(installKey, error)
+          if (task) broadcastMarketplaceInstallTask(task)
+        }
+        return results
+      } catch (error) {
+        console.error(`[skills:install] failed for ${source}/${skillId}`, error)
+        return failed("安装失败，请检查网络或磁盘空间后重试。")
+      } finally {
+        if (tmpDir) {
+          await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
         }
       }
-
-      await writeSkillLock(lock)
-
-      // Cleanup temp dir
-      if (tmpDir) {
-        await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
-      }
-
-      return results
     },
   )
 
@@ -1846,7 +1882,7 @@ export function registerIpcHandlers(): void {
     ): Promise<{ skills: { id: string; skillId: string; name: string; installs: number; source: string }[]; count: number }> => {
       const q = query.trim().length >= 2 ? query.trim() : "skill"
       const url = `https://skills.sh/api/search?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`
-      const res = await fetch(url)
+      const res = await marketFetch(url)
       if (!res.ok) throw new Error(`skills.sh search failed (HTTP ${res.status})`)
       const data = await res.json()
       return { skills: data.skills ?? [], count: data.count ?? 0 }
@@ -1883,9 +1919,9 @@ export function registerIpcHandlers(): void {
       let branch = branchCache.get(source)
       if (!branch) {
         try {
-          const res = await fetch(`https://api.github.com/repos/${source}`)
+          const res = await marketFetch(`https://api.github.com/repos/${source}`)
           if (res.ok) {
-            const data = await res.json()
+            const data = await res.json() as { default_branch?: string }
             branch = data.default_branch || "main"
           } else {
             branch = "main"
@@ -1893,8 +1929,9 @@ export function registerIpcHandlers(): void {
         } catch {
           branch = "main"
         }
-        branchCache.set(source, branch)
+        branchCache.set(source, branch || "main")
       }
+      const resolvedBranch = branch || "main"
 
       const paths = [
         `skills/${skillId}/SKILL.md`,
@@ -1904,13 +1941,88 @@ export function registerIpcHandlers(): void {
         `SKILL.md`,
       ]
 
+      for (const ref of Array.from(new Set([resolvedBranch, "HEAD"]))) {
+        for (const p of paths) {
+          try {
+            const res = await marketFetch(`https://raw.githubusercontent.com/${source}/${ref}/${p}`)
+            if (res.ok) {
+              const content = await res.text()
+              if (isRequestedMarketplaceContent(skillId, p, content)) return content
+            }
+          } catch {
+            continue
+          }
+        }
+      }
+
+      // raw.githubusercontent.com is unavailable on some networks even when
+      // api.github.com works, so retry through the GitHub Contents API.
       for (const p of paths) {
         try {
-          const res = await fetch(`https://raw.githubusercontent.com/${source}/${branch}/${p}`)
-          if (res.ok) return await res.text()
+          const encodedPath = p.split("/").map(encodeURIComponent).join("/")
+          const res = await marketFetch(
+            `https://api.github.com/repos/${source}/contents/${encodedPath}?ref=${encodeURIComponent(resolvedBranch)}`,
+            {
+              headers: {
+                Accept: "application/vnd.github.raw+json",
+                "User-Agent": "Skillbox",
+              },
+            },
+          )
+          if (res.ok) {
+            const content = await res.text()
+            if (isRequestedMarketplaceContent(skillId, p, content)) return content
+          }
         } catch {
           continue
         }
+      }
+
+      // Some repositories keep skills below a custom package/plugin folder.
+      // Resolve those entries by directory name instead of assuming one layout.
+      try {
+        const treeResponse = await marketFetch(
+          `https://api.github.com/repos/${source}/git/trees/HEAD?recursive=1`,
+          {
+            headers: {
+              Accept: "application/vnd.github+json",
+              "User-Agent": "Skillbox",
+            },
+          },
+        )
+        if (treeResponse.ok) {
+          const treeData = await treeResponse.json() as {
+            truncated?: boolean
+            tree?: Array<{ path: string; type: string }>
+          }
+          const nestedPath = !treeData.truncated
+            ? treeData.tree?.find((entry) =>
+              entry.type === "blob" &&
+              path.posix.basename(entry.path) === "SKILL.md" &&
+              path.posix.basename(path.posix.dirname(entry.path)).toLowerCase() === skillId.toLowerCase(),
+            )?.path
+            : undefined
+          if (nestedPath) {
+            const encodedPath = nestedPath.split("/").map(encodeURIComponent).join("/")
+            const rawResponse = await marketFetch(
+              `https://raw.githubusercontent.com/${source}/HEAD/${encodedPath}`,
+            )
+            if (rawResponse.ok) return await rawResponse.text()
+
+            const contentsResponse = await marketFetch(
+              `https://api.github.com/repos/${source}/contents/${encodedPath}?ref=HEAD`,
+              {
+                headers: {
+                  Accept: "application/vnd.github.raw+json",
+                  "User-Agent": "Skillbox",
+                },
+              },
+            )
+            if (contentsResponse.ok) return await contentsResponse.text()
+          }
+        }
+      } catch {
+        // Preview is optional; installation still has its own fallbacks.
       }
       return null
     },
@@ -2463,16 +2575,18 @@ Add your skill instructions here.
 
     // Remove from all agent directories
     for (const agent of Object.values(agentRegistry)) {
-      const targetDir = path.join(agent.globalSkillsDir, safeName)
-      try {
-        const stat = await fs.lstat(targetDir)
-        if (stat.isSymbolicLink()) {
-          await fs.unlink(targetDir)
-        } else {
-          await fs.rm(targetDir, { recursive: true, force: true })
+      for (const skillsDir of getAgentGlobalSkillDirectories(agent)) {
+        const targetDir = path.join(skillsDir, safeName)
+        try {
+          const stat = await fs.lstat(targetDir)
+          if (stat.isSymbolicLink()) {
+            await fs.unlink(targetDir)
+          } else {
+            await fs.rm(targetDir, { recursive: true, force: true })
+          }
+        } catch {
+          // Directory doesn't exist for this agent
         }
-      } catch {
-        // Directory doesn't exist for this agent
       }
     }
 
@@ -2515,9 +2629,16 @@ Add your skill instructions here.
 
     if (parsed.type === "github") {
       tmpDir = path.join(os.tmpdir(), `skillsgate-upd-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`)
-      const cloneResult = await gitClone(`${parsed.url}.git`, tmpDir)
-      if (!cloneResult.success) {
-        throw new Error(`Clone failed: ${cloneResult.error}`)
+      const downloadResult = await acquireGitHubRepository({
+        owner: parsed.owner,
+        repo: parsed.repo,
+        skillId: safeName,
+        destination: tmpDir,
+        clone: gitClone,
+        fetchImpl: marketFetch,
+      })
+      if (!downloadResult.success) {
+        throw new Error(downloadResult.error)
       }
       sourceDir = tmpDir
     } else {

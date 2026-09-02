@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import type { Dirent } from "node:fs"
 import path from "node:path"
+import { findSkillDirectories } from "./skill-directory-scanner"
 
 export interface CustomSkillLocation {
   skillDir: string
@@ -16,7 +17,6 @@ interface ProjectProbe {
   agentName?: string | null
 }
 
-const MAX_CUSTOM_PROJECT_DEPTH = 2
 const SKIPPED_PROJECT_DIRECTORIES = new Set([
   "node_modules",
   ".git",
@@ -54,9 +54,8 @@ function pathKey(value: string): string {
 /**
  * 扫描用户明确添加的自定义目录。
  *
- * 只支持三种既有布局：目录本身是 Skill、目录下直接放置多个 Skill、
- * 以及目录下两级项目中的标准 Agent Skill 目录。不会读取项目文件，
- * 也不会递归进入 Junction 或符号链接。
+ * 递归发现目录中的 Skill，并识别其中标准 Agent 项目目录。不会读取
+ * 项目文件，也不会递归进入 Junction 或符号链接。
  */
 export async function findCustomSkillLocations(
   rootPath: string,
@@ -64,7 +63,7 @@ export async function findCustomSkillLocations(
 ): Promise<CustomSkillLocation[]> {
   const resolvedRoot = path.resolve(rootPath)
   const results: CustomSkillLocation[] = []
-  const seenSkills = new Set<string>()
+  const seenSkills = new Map<string, number>()
 
   async function addSkill(
     skillDir: string,
@@ -76,39 +75,53 @@ export async function findCustomSkillLocations(
 
     const canonicalPath = await fs.realpath(skillDir).catch(() => path.resolve(skillDir))
     const key = pathKey(canonicalPath)
-    if (seenSkills.has(key)) return
-    seenSkills.add(key)
+    const existingIndex = seenSkills.get(key)
+    if (existingIndex !== undefined) {
+      // 项目目录能提供 Agent 归属，优先于同一路径先被通用递归扫描到的结果。
+      if (scope === "project" && results[existingIndex].scope !== "project") {
+        results[existingIndex] = { skillDir, canonicalPath, scope, projectName, agentName }
+      }
+      return
+    }
+    seenSkills.set(key, results.length)
     results.push({ skillDir, canonicalPath, scope, projectName, agentName })
   }
 
   await addSkill(resolvedRoot, "custom", null)
 
-  const rootEntries = await readDirectory(resolvedRoot)
-  if (rootEntries.length === 0) return results
-
-  // 兼容“一个目录直接放多个 Skill”的原有用法。
-  for (const entry of rootEntries) {
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
-    await addSkill(path.join(resolvedRoot, entry.name), "custom", null)
+  const genericSkills = await findSkillDirectories(resolvedRoot)
+  for (const skill of genericSkills) {
+    await addSkill(skill.path, "custom", null)
   }
 
-  const queue: Array<{ directory: string; depth: number }> = [
-    { directory: resolvedRoot, depth: 0 },
-  ]
+  const queue = [resolvedRoot]
+  const visitedDirectories = new Set<string>()
+  for (let index = 0; index < queue.length; index += 1) {
+    const directory = queue[index]
+    const canonicalPath = await fs.realpath(directory).catch(() => path.resolve(directory))
+    const key = pathKey(canonicalPath)
+    if (visitedDirectories.has(key)) continue
+    visitedDirectories.add(key)
 
-  while (queue.length > 0) {
-    const current = queue.shift()
-    if (!current) break
+    // Skill 内的子目录是支持文件，不能被当成项目根目录继续扫描。
+    if (await hasSkillMd(directory)) continue
 
-    const projectName = path.basename(current.directory) || current.directory
+    const entries = await readDirectory(directory)
+    if (entries.length === 0) continue
+    const entriesByName = new Map(entries.map((entry) => [entry.name, entry]))
+    const projectName = path.basename(directory) || directory
     for (const probe of projectProbes) {
-      const probeDir = path.join(current.directory, probe.subpath)
-      const skillEntries = await readDirectory(probeDir)
+      const firstSegment = probe.subpath.split(/[\\/]/, 1)[0]
+      const firstEntry = entriesByName.get(firstSegment)
+      if (!firstEntry || (!firstEntry.isDirectory() && !firstEntry.isSymbolicLink())) {
+        continue
+      }
 
-      for (const skillEntry of skillEntries) {
-        if (!skillEntry.isDirectory() && !skillEntry.isSymbolicLink()) continue
+      const probeDir = path.join(directory, probe.subpath)
+      const skillDirectories = await findSkillDirectories(probeDir)
+      for (const skill of skillDirectories) {
         await addSkill(
-          path.join(probeDir, skillEntry.name),
+          skill.path,
           "project",
           projectName,
           probe.agentName ?? null,
@@ -116,17 +129,10 @@ export async function findCustomSkillLocations(
       }
     }
 
-    if (current.depth >= MAX_CUSTOM_PROJECT_DEPTH) continue
-
-    const entries = await readDirectory(current.directory)
-
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) continue
       if (entry.name.startsWith(".") || SKIPPED_PROJECT_DIRECTORIES.has(entry.name)) continue
-      queue.push({
-        directory: path.join(current.directory, entry.name),
-        depth: current.depth + 1,
-      })
+      queue.push(path.join(directory, entry.name))
     }
   }
 

@@ -39,8 +39,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   inspectImportSkillsPackage: () => ipcRenderer.invoke("skills:inspect-import-package"),
   importSkillsPackage: (archivePath: string) =>
     ipcRenderer.invoke("skills:import-package", archivePath),
-  installSkill: (source: string, agents: string[], scope: string) =>
-    ipcRenderer.invoke("skills:install", source, agents, scope),
+  installSkill: (source: string, skillId: string, agents: string[], scope: string) =>
+    ipcRenderer.invoke("skills:install", source, skillId, agents, scope),
+  listSkillInstallTasks: () => ipcRenderer.invoke("skills:list-install-tasks"),
+  dismissSkillInstallTask: (key: string) =>
+    ipcRenderer.invoke("skills:dismiss-install-task", key),
   installSkillViaCli: (source: string) =>
     invokeWithLogging("skills:install-via-cli", source),
   searchCatalog: (query: string, limit?: number, offset?: number) =>
@@ -137,6 +140,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   onMigrationProgress: (callback: (progress: unknown) => void) => {
     return subscribe("skills:migration-progress", callback)
+  },
+  onSkillInstallProgress: (callback: (progress: unknown) => void) => {
+    return subscribe("skills:install-progress", callback)
   },
   onPendingAgentRestored: (callback: (result: unknown) => void) => {
     return subscribe("skills:pending-agent-restored", callback)

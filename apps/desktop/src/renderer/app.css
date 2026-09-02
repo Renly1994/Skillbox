@@ -1447,6 +1447,99 @@ select:focus-visible {
 	outline-offset: 3px;
 }
 
+.skillbox-market-install-tasks {
+	position: absolute;
+	right: 18px;
+	bottom: 18px;
+	z-index: 6;
+	display: flex;
+	width: min(340px, calc(100% - 36px));
+	max-height: min(280px, calc(100% - 36px));
+	flex-direction: column;
+	gap: 8px;
+	overflow-y: auto;
+}
+
+.skillbox-market-install-task {
+	display: flex;
+	align-items: center;
+	border: 1px solid color-mix(in srgb, var(--foreground) 24%, transparent);
+	border-radius: 10px;
+	background: var(--surface);
+	box-shadow: 0 10px 28px rgba(42, 35, 24, .18);
+}
+
+.skillbox-market-install-task.is-failed {
+	border-color: color-mix(in srgb, #c5422d 48%, var(--border));
+}
+
+.skillbox-market-install-task > button:first-child {
+	display: flex;
+	min-width: 0;
+	flex: 1;
+	align-items: center;
+	gap: 10px;
+	padding: 11px 12px;
+	color: var(--foreground);
+	text-align: left;
+}
+
+.skillbox-market-install-task__icon {
+	display: inline-flex;
+	width: 20px;
+	flex: 0 0 20px;
+	align-items: center;
+	justify-content: center;
+	color: var(--accent);
+	font-weight: 700;
+}
+
+.skillbox-market-install-task.is-failed .skillbox-market-install-task__icon {
+	color: #c5422d;
+}
+
+.skillbox-market-install-task__body {
+	display: flex;
+	min-width: 0;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.skillbox-market-install-task__body strong,
+.skillbox-market-install-task__body small {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.skillbox-market-install-task__body strong {
+	font-size: 12px;
+	font-weight: 650;
+}
+
+.skillbox-market-install-task__body small {
+	color: var(--muted);
+	font-size: 11px;
+}
+
+.skillbox-market-install-task__dismiss {
+	display: inline-flex;
+	width: 36px;
+	height: 36px;
+	flex: 0 0 36px;
+	align-items: center;
+	justify-content: center;
+	margin-right: 4px;
+	border-radius: 7px;
+	color: var(--muted);
+	font-size: 18px;
+}
+
+.skillbox-market-install-task__dismiss:hover {
+	background: var(--surface-hover);
+	color: var(--foreground);
+}
+
 .skillbox-market-main {
 	position: relative;
 	display: flex;

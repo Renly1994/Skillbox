@@ -47,6 +47,10 @@ interface CloseStrings {
   remember: string
   trayShow: string
   trayQuit: string
+  activeTitle: string
+  activeMessage: string
+  activeDetail: string
+  quitAnyway: string
 }
 
 function getStrings(): CloseStrings {
@@ -60,6 +64,10 @@ function getStrings(): CloseStrings {
       remember: "记住我的选择，以后不再询问",
       trayShow: "显示 Skillbox",
       trayQuit: "退出",
+      activeTitle: "Skill 仍在下载",
+      activeMessage: "退出将中断正在进行的下载",
+      activeDetail: "可先最小化到托盘，Skillbox 会继续在后台完成安装。",
+      quitAnyway: "仍然退出",
     }
   }
   return {
@@ -71,6 +79,10 @@ function getStrings(): CloseStrings {
     remember: "Remember my choice and don't ask again",
     trayShow: "Show Skillbox",
     trayQuit: "Quit",
+    activeTitle: "Skill download in progress",
+    activeMessage: "Quitting will interrupt the current download",
+    activeDetail: "Minimize to the tray to let Skillbox finish installing in the background.",
+    quitAnyway: "Quit Anyway",
   }
 }
 
@@ -113,14 +125,18 @@ function minimizeToTray(win: BrowserWindow, strings: CloseStrings): void {
  * Intercepts the window close button: asks whether to minimize to the tray
  * or quit, and honors a remembered choice from then on.
  */
-export function setupCloseBehavior(win: BrowserWindow): void {
+export function setupCloseBehavior(
+  win: BrowserWindow,
+  hasActiveBackgroundWork: () => boolean = () => false,
+): void {
   const strings = getStrings()
 
   win.on("close", (event) => {
     if (isQuitting) return
 
     const saved = getSavedBehavior()
-    if (saved === "quit") return
+    const hasActiveWork = hasActiveBackgroundWork()
+    if (saved === "quit" && !hasActiveWork) return
     if (saved === "tray") {
       event.preventDefault()
       minimizeToTray(win, strings)
@@ -132,23 +148,23 @@ export function setupCloseBehavior(win: BrowserWindow): void {
     void (async () => {
       if (win.isDestroyed()) return
       const { response, checkboxChecked } = await dialog.showMessageBox(win, {
-        type: "question",
-        title: strings.title,
-        message: strings.message,
-        detail: strings.detail,
-        buttons: [strings.minimize, strings.quit],
+        type: hasActiveWork ? "warning" : "question",
+        title: hasActiveWork ? strings.activeTitle : strings.title,
+        message: hasActiveWork ? strings.activeMessage : strings.message,
+        detail: hasActiveWork ? strings.activeDetail : strings.detail,
+        buttons: [strings.minimize, hasActiveWork ? strings.quitAnyway : strings.quit],
         defaultId: 0,
         cancelId: 0,
-        checkboxLabel: strings.remember,
+        checkboxLabel: saved ? undefined : strings.remember,
         noLink: true,
       })
       if (win.isDestroyed()) return
 
       if (response === 0) {
-        if (checkboxChecked) saveBehavior("tray")
+        if (!saved && checkboxChecked) saveBehavior("tray")
         minimizeToTray(win, strings)
       } else {
-        if (checkboxChecked) saveBehavior("quit")
+        if (!saved && checkboxChecked) saveBehavior("quit")
         isQuitting = true
         win.close()
       }

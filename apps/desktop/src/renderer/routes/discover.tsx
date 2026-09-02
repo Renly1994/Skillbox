@@ -12,6 +12,15 @@ import { NavLink } from "react-router-dom"
 import { electronAPI } from "../lib/electron-api"
 import { AgentLogo } from "../components/agent-logo"
 import { SidebarUtilities, SkillboxBrand } from "../components/skillbox-brand"
+import {
+  createInstalledMarketplaceState,
+  formatInstallProgress,
+  isMarketplaceSkillInstalled,
+  marketplaceKey,
+  mergeInstallTask,
+  type InstalledMarketplaceState,
+  type InstallTaskState,
+} from "../lib/marketplace-state"
 
 // ---------------------------------------------------------------------------
 // Types matching the skills.sh response shape
@@ -260,15 +269,15 @@ function InstallsIcon() {
 interface SkillCardProps {
   skill: CatalogSkill
   onSelect: (skill: CatalogSkill) => void
-  installedNames: Set<string>
+  installedState: InstalledMarketplaceState
 }
 
 const SkillCard = memo(function SkillCard({
   skill,
   onSelect,
-  installedNames,
+  installedState,
 }: SkillCardProps) {
-  const isInstalled = installedNames.has(skill.name.toLowerCase())
+  const isInstalled = isMarketplaceSkillInstalled(installedState, skill)
 
   return (
     <button
@@ -371,14 +380,20 @@ function AgentDropdown({
   selected,
   defaults,
   onToggle,
+  disabled = false,
 }: {
   agents: DetectedAgent[]
   selected: string[]
   defaults: string[]
   onToggle: (name: string) => void
+  disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (disabled) setOpen(false)
+  }, [disabled])
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -404,8 +419,9 @@ function AgentDropdown({
       </p>
       <button
         type="button"
+        disabled={disabled}
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between rounded-lg border border-border bg-surface px-3 py-2 text-[12px] text-foreground hover:border-accent/30 transition-colors"
+        className="w-full flex items-center justify-between rounded-lg border border-border bg-surface px-3 py-2 text-[12px] text-foreground hover:border-accent/30 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
       >
         <span>{label}</span>
         <svg
@@ -468,11 +484,11 @@ interface DetailPanelProps {
   availableAgents: DetectedAgent[]
   defaultAgents: string[]
   onClose: () => void
-  installedNames: Set<string>
-  installedSources: Set<string>
+  installedState: InstalledMarketplaceState
   getCachedContent: (key: string) => string | null | undefined
   cacheContent: (key: string, content: string | null) => void
-  onInstall: (source: string, agentNames: string[]) => Promise<void>
+  onInstall: (source: string, skillId: string, agentNames: string[]) => Promise<void>
+  installTask?: SkillInstallProgress
 }
 
 function DetailPanel({
@@ -480,11 +496,11 @@ function DetailPanel({
   availableAgents,
   defaultAgents,
   onClose,
-  installedNames,
-  installedSources,
+  installedState,
   getCachedContent,
   cacheContent,
   onInstall,
+  installTask,
 }: DetailPanelProps) {
   const [selectedAgents, setSelectedAgents] = useState<string[]>([])
   const cacheKey = `${skill.source}:${skill.skillId}`
@@ -492,12 +508,11 @@ function DetailPanel({
     getCachedContent(cacheKey) ?? null,
   )
   const [loading, setLoading] = useState(getCachedContent(cacheKey) === undefined)
-  const [installing, setInstalling] = useState(false)
-  const [installError, setInstallError] = useState<string | null>(null)
-  const [installed, setInstalled] = useState(
-    installedNames.has(skill.name.toLowerCase()) ||
-      installedSources.has(skill.source.toLowerCase()),
-  )
+  const installing = installTask?.status === "running"
+  const installError = installTask?.status === "failed" ? installTask.error : null
+  const installed =
+    isMarketplaceSkillInstalled(installedState, skill) ||
+    installTask?.status === "completed"
 
   // Fetch SKILL.md content from GitHub raw
   useEffect(() => {
@@ -516,13 +531,12 @@ function DetailPanel({
       .then((text) => {
         if (!cancelled) {
           setContent(text)
-          cacheContent(cacheKey, text)
+          if (text) cacheContent(cacheKey, text)
         }
       })
       .catch(() => {
         if (!cancelled) {
           setContent(null)
-          cacheContent(cacheKey, null)
         }
       })
       .finally(() => {
@@ -534,49 +548,32 @@ function DetailPanel({
     }
   }, [cacheContent, cacheKey, getCachedContent, skill.skillId, skill.source])
 
-  // Sync installed state when prop changes
   useEffect(() => {
-    setInstalled(
-      installedNames.has(skill.name.toLowerCase()) ||
-        installedSources.has(skill.source.toLowerCase()),
+    setSelectedAgents(
+      installTask?.agentNames.length ? installTask.agentNames : defaultAgents,
     )
-  }, [installedNames, installedSources, skill.name, skill.source])
-
-  useEffect(() => {
-    setSelectedAgents(defaultAgents)
-  }, [defaultAgents, skill.skillId])
+  }, [defaultAgents, installTask?.key, skill.skillId])
 
   const renderedContent = useMemo(
     () => (content ? renderMarkdown(content) : ""),
     [content],
   )
 
-  async function handleInstall() {
+  function handleInstall() {
     if (!skill.source) return
 
     console.log("[discover/detail] install clicked", {
       source: skill.source,
       selectedAgents,
     })
-    setInstalling(true)
-    setInstallError(null)
-    try {
-      await onInstall(skill.source, selectedAgents)
-      console.log("[discover/detail] install succeeded", {
-        source: skill.source,
-      })
-      setInstalled(true)
-    } catch (err) {
+    void onInstall(skill.source, skill.skillId, selectedAgents).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err)
       console.error("[discover/detail] install failed", {
         source: skill.source,
         error: err,
         message: msg,
       })
-      setInstallError(msg)
-    } finally {
-      setInstalling(false)
-    }
+    })
   }
 
   function toggleAgent(name: string) {
@@ -672,11 +669,21 @@ function DetailPanel({
                 selected={selectedAgents}
                 defaults={defaultAgents}
                 onToggle={toggleAgent}
+                disabled={installing}
               />
             )}
 
             {installError && (
               <p className="text-[12px] text-red-400 mt-3">{installError}</p>
+            )}
+            {installing && installTask && (
+              <p
+                className="text-[12px] text-muted mt-3"
+                role="status"
+                aria-live="polite"
+              >
+                {formatInstallProgress(installTask)}
+              </p>
             )}
           </div>
 
@@ -703,6 +710,53 @@ function DetailPanel({
   )
 }
 
+function BackgroundInstallTasks({
+  tasks,
+  onOpen,
+  onDismiss,
+}: {
+  tasks: SkillInstallProgress[]
+  onOpen: (task: SkillInstallProgress) => void
+  onDismiss: (key: string) => void
+}) {
+  if (tasks.length === 0) return null
+
+  return (
+    <div className="skillbox-market-install-tasks" aria-live="polite">
+      {tasks.map((task) => (
+        <div
+          key={task.key}
+          className={`skillbox-market-install-task ${task.status === "failed" ? "is-failed" : ""}`}
+        >
+          <button type="button" onClick={() => onOpen(task)}>
+            <span className="skillbox-market-install-task__icon">
+              {task.status === "running" ? <SpinnerIcon /> : "!"}
+            </span>
+            <span className="skillbox-market-install-task__body">
+              <strong data-no-localize>{task.skillId}</strong>
+              <small>
+                {task.status === "failed"
+                  ? task.error || "安装失败，点击查看"
+                  : formatInstallProgress(task)}
+              </small>
+            </span>
+          </button>
+          {task.status === "failed" && (
+            <button
+              type="button"
+              className="skillbox-market-install-task__dismiss"
+              aria-label={`关闭 ${task.skillId} 的失败提示`}
+              onClick={() => onDismiss(task.key)}
+            >
+              ×
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Discover (main export)
 // ---------------------------------------------------------------------------
@@ -717,8 +771,12 @@ export function Discover() {
   const [selectedSkill, setSelectedSkill] = useState<CatalogSkill | null>(null)
   const [availableAgents, setAvailableAgents] = useState<DetectedAgent[]>([])
   const [marketTargets, setMarketTargets] = useState<string[]>([])
-  const [installedNames, setInstalledNames] = useState<Set<string>>(new Set())
-  const [installedSources, setInstalledSources] = useState<Set<string>>(new Set())
+  const [installedState, setInstalledState] = useState<InstalledMarketplaceState>(
+    () => createInstalledMarketplaceState([]),
+  )
+  const [installTasks, setInstallTasks] = useState<
+    InstallTaskState<SkillInstallProgress>
+  >({})
   const [error, setError] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
   const [trending, setTrending] = useState<CatalogSkill[]>([])
@@ -738,14 +796,7 @@ export function Discover() {
   const latestQueryRef = useRef("")
 
   function updateInstalledState(installed: InstalledSkill[]) {
-    setInstalledNames(new Set(installed.map((s) => s.name.toLowerCase())))
-    setInstalledSources(
-      new Set(
-        installed
-          .map((s) => s.source?.toLowerCase())
-          .filter((value): value is string => Boolean(value)),
-      ),
-    )
+    setInstalledState(createInstalledMarketplaceState(installed))
   }
 
   // Load installed skills to mark installed state
@@ -759,6 +810,27 @@ export function Discover() {
     })
 
     return cleanup
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    const cleanup = electronAPI.onSkillInstallProgress((task) => {
+      if (active) setInstallTasks((current) => mergeInstallTask(current, task))
+    })
+
+    electronAPI.listSkillInstallTasks()
+      .then((tasks) => {
+        if (!active) return
+        setInstallTasks((current) =>
+          tasks.reduce((state, task) => mergeInstallTask(state, task), current),
+        )
+      })
+      .catch(() => {})
+
+    return () => {
+      active = false
+      cleanup()
+    }
   }, [])
 
   useEffect(() => {
@@ -879,19 +951,75 @@ export function Discover() {
     setPage(1)
   }, [trimmedQuery, officialOnly])
 
-  async function handleInstall(source: string, agentNames: string[]) {
-    console.log("[discover] starting install", { source, agentNames })
-    const results = await electronAPI.installSkill(source, agentNames, "global")
-    const failed = results.filter((r: { success: boolean }) => !r.success)
-    if (failed.length > 0) {
-      const errorMsg = failed.map((r: { error?: string }) => r.error).join(", ")
-      throw new Error(errorMsg)
+  async function handleInstall(source: string, skillId: string, agentNames: string[]) {
+    console.log("[discover] starting install", { source, skillId, agentNames })
+    const key = marketplaceKey(source, skillId)
+    const now = Date.now()
+    const initialTask: SkillInstallProgress = {
+      key,
+      source,
+      skillId,
+      agentNames: [...agentNames],
+      status: "running",
+      stage: "preparing",
+      completed: 0,
+      total: 0,
+      downloadedBytes: 0,
+      totalBytes: 0,
+      startedAt: now,
+      updatedAt: now,
     }
+    setInstallTasks((current) => mergeInstallTask(current, initialTask))
 
-    const installed = await electronAPI.rescanSkills()
-    console.log("[discover] installed skills after install", installed)
-    updateInstalledState(installed)
+    try {
+      const results = await electronAPI.installSkill(source, skillId, agentNames, "global")
+      const failed = results.filter((r: { success: boolean }) => !r.success)
+      if (failed.length > 0) {
+        const errorMsg = failed.map((r: { error?: string }) => r.error).join(", ")
+        throw new Error(errorMsg)
+      }
+
+      const installed = await electronAPI.rescanSkills()
+      console.log("[discover] installed skills after install", installed)
+      updateInstalledState(installed)
+      setInstallTasks((current) => mergeInstallTask(current, {
+        ...(current[key] || initialTask),
+        status: "completed",
+        stage: "complete",
+        error: undefined,
+        updatedAt: Date.now(),
+      }))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setInstallTasks((current) => mergeInstallTask(current, {
+        ...(current[key] || initialTask),
+        status: "failed",
+        stage: "failed",
+        error: message,
+        updatedAt: Date.now(),
+      }))
+      throw error
+    }
   }
+
+  const openInstallTask = useCallback((task: SkillInstallProgress) => {
+    setSelectedSkill({
+      id: `install:${task.key}`,
+      skillId: task.skillId,
+      name: task.skillId,
+      installs: 0,
+      source: task.source,
+    })
+  }, [])
+
+  const dismissInstallTask = useCallback((key: string) => {
+    setInstallTasks((current) => {
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+    void electronAPI.dismissSkillInstallTask(key)
+  }, [])
 
   const getCachedContent = useCallback((key: string) => {
     return contentCacheRef.current.get(key)
@@ -963,6 +1091,12 @@ export function Discover() {
 
   const canGoPrev = currentPage > 1
   const canGoNext = currentPage < totalPages || (isSearching && hasMore)
+  const visibleInstallTasks = Object.values(installTasks)
+    .filter((task) => task.status === "running" || task.status === "failed")
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+  const selectedInstallTask = selectedSkill
+    ? installTasks[marketplaceKey(selectedSkill.source, selectedSkill.skillId)]
+    : undefined
 
   return (
     <div className="flex h-full min-w-0">
@@ -970,7 +1104,7 @@ export function Discover() {
         agents={availableAgents}
         selectedTargets={marketTargets}
         onToggleTarget={toggleMarketTarget}
-        installedCount={installedNames.size}
+        installedCount={installedState.names.size}
       />
       <div className="skillbox-market-main">
       {/* Header */}
@@ -1103,7 +1237,7 @@ export function Discover() {
                   key={skill.id}
                   skill={skill}
                   onSelect={setSelectedSkill}
-                  installedNames={installedNames}
+                  installedState={installedState}
                 />
               ))}
             </div>
@@ -1139,7 +1273,7 @@ export function Discover() {
         )}
       </div>
 
-      {showBackToTop && (
+      {showBackToTop && visibleInstallTasks.length === 0 && (
         <button
           type="button"
           title="回到顶部"
@@ -1151,6 +1285,12 @@ export function Discover() {
         </button>
       )}
 
+      <BackgroundInstallTasks
+        tasks={visibleInstallTasks}
+        onOpen={openInstallTask}
+        onDismiss={dismissInstallTask}
+      />
+
       {/* Detail panel overlay */}
       {selectedSkill && (
         <DetailPanel
@@ -1158,11 +1298,11 @@ export function Discover() {
           availableAgents={availableAgents}
           defaultAgents={marketTargets}
           onClose={() => setSelectedSkill(null)}
-          installedNames={installedNames}
-          installedSources={installedSources}
+          installedState={installedState}
           getCachedContent={getCachedContent}
           cacheContent={cacheContent}
           onInstall={handleInstall}
+          installTask={selectedInstallTask}
         />
       )}
       </div>

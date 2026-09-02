@@ -8,7 +8,11 @@ import {
 } from "electron"
 import os from "node:os"
 import path from "node:path"
-import { registerIpcHandlers, setMainWindow } from "./ipc-handlers"
+import {
+  hasActiveMarketplaceInstalls,
+  registerIpcHandlers,
+  setMainWindow,
+} from "./ipc-handlers"
 import { SkillsFileWatcher } from "./file-watcher"
 import { closeDb } from "./db/index"
 import { initAutoUpdater } from "./auto-updater"
@@ -156,7 +160,7 @@ function createWindow(): void {
     mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"))
   }
 
-  setupCloseBehavior(mainWindow)
+  setupCloseBehavior(mainWindow, hasActiveMarketplaceInstalls)
 
   initAutoUpdater(mainWindow)
 }

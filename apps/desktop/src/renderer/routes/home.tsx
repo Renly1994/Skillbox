@@ -838,8 +838,8 @@ function MiddlePanel({
               <span aria-hidden className={refreshing ? "skillbox-refresh-icon is-spinning" : "skillbox-refresh-icon"}>↻</span>
               {refreshing ? "扫描中" : "刷新"}
             </button>
-            <button onClick={onOpenScanSources} className="skillbox-header-action" title="管理额外扫描目录">
-              扫描目录
+            <button onClick={onOpenScanSources} className="skillbox-header-action" title="添加或管理额外目录">
+              添加目录
             </button>
             <button
               onClick={onCreateSkill}

@@ -45,6 +45,22 @@ declare global {
     error?: string
   }
 
+  interface SkillInstallProgress {
+    key: string
+    source: string
+    skillId: string
+    agentNames: string[]
+    status: "running" | "completed" | "failed"
+    stage: "preparing" | "resolving" | "downloading" | "fallback" | "installing" | "complete" | "failed"
+    completed: number
+    total: number
+    downloadedBytes: number
+    totalBytes: number
+    error?: string
+    startedAt: number
+    updatedAt: number
+  }
+
   // Remote server types
   interface RemoteServer {
     id: string
@@ -159,9 +175,12 @@ declare global {
     }>
     installSkill: (
       source: string,
+      skillId: string,
       agents: string[],
       scope: string,
     ) => Promise<InstallResult[]>
+    listSkillInstallTasks: () => Promise<SkillInstallProgress[]>
+    dismissSkillInstallTask: (key: string) => Promise<void>
     installSkillViaCli: (
       source: string,
     ) => Promise<{ success: boolean; output: string; error?: string }>
@@ -292,6 +311,9 @@ declare global {
     ) => () => void
     onMigrationProgress: (
       callback: (progress: MigrationProgress) => void,
+    ) => () => void
+    onSkillInstallProgress: (
+      callback: (progress: SkillInstallProgress) => void,
     ) => () => void
     onPendingAgentRestored: (
       callback: (result: { restored: number; agents: string[] }) => void,
