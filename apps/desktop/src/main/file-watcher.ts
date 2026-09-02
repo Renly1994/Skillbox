@@ -4,6 +4,7 @@ import path from "node:path"
 import os from "node:os"
 import { rescanAndCache, rescanSingleSkill, detectAgents } from "./ipc-handlers"
 import { agentRegistry, getAgentGlobalSkillDirectories } from "./agent-registry"
+import { resolveWatchDirectories } from "./watch-directories"
 
 const DEBOUNCE_MS = 500
 const CANONICAL_DIR = path.join(os.homedir(), ".agents", "skills")
@@ -27,47 +28,21 @@ export class SkillsFileWatcher {
   }
 
   async start(): Promise<void> {
-    const dirsToWatch = new Set<string>()
-
-    // Always watch the canonical skills directory
-    try {
-      const realCanonical = await fs.promises.realpath(CANONICAL_DIR)
-      dirsToWatch.add(realCanonical)
-    } catch {
-      dirsToWatch.add(CANONICAL_DIR)
-    }
-
-    // For each agent, only watch if it resolves to a different real path
     const detected = await detectAgents()
+    const agentDirectories: string[] = []
     for (const agent of detected) {
       const entry = agentRegistry[agent.name]
       if (!entry) continue
-      for (const skillsDir of getAgentGlobalSkillDirectories(entry)) {
-        try {
-          const realPath = await fs.promises.realpath(skillsDir)
-          dirsToWatch.add(realPath)
-        } catch {
-          // 仅为当前主目录预创建监听路径；旧版兼容目录不存在时不应被重建。
-          if (skillsDir === entry.globalSkillsDir) {
-            dirsToWatch.add(skillsDir)
-          }
-        }
-      }
+      agentDirectories.push(...getAgentGlobalSkillDirectories(entry))
     }
 
+    const dirsToWatch = await resolveWatchDirectories(CANONICAL_DIR, agentDirectories)
     for (const dir of dirsToWatch) {
       this.watchDirectory(dir)
     }
   }
 
   private watchDirectory(dir: string): void {
-    // Ensure the directory exists before watching
-    try {
-      fs.mkdirSync(dir, { recursive: true })
-    } catch {
-      // If we can't create it, try watching anyway
-    }
-
     try {
       // Use recursive option on macOS/Windows (supported natively).
       // On Linux, recursive is supported since Node 19+ with inotify.

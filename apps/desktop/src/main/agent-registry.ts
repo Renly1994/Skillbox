@@ -13,6 +13,7 @@ export interface AgentEntry {
 
 const home = os.homedir()
 const configHome = process.env.XDG_CONFIG_HOME || path.join(home, ".config")
+const copilotHome = process.env.COPILOT_HOME || path.join(home, ".copilot")
 const openCodeHome = process.env.OPENCODE_CONFIG_DIR || path.join(configHome, "opencode")
 const piAgentHome = process.env.PI_CODING_AGENT_DIR || path.join(home, ".pi", "agent")
 const factoryHome = process.env.FACTORY_HOME || path.join(home, ".factory")
@@ -35,6 +36,36 @@ export async function dirExists(targetPath: string): Promise<boolean> {
 
 async function anyDirExists(paths: string[]): Promise<boolean> {
   return (await Promise.all(paths.map(dirExists))).some(Boolean)
+}
+
+async function commandExists(commandName: string): Promise<boolean> {
+  const pathEntries = (process.env.PATH || "")
+    .split(path.delimiter)
+    .map((entry) => entry.replace(/^"|"$/g, ""))
+    .filter(Boolean)
+  const extensions = process.platform === "win32"
+    ? (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
+    : [""]
+
+  for (const directory of pathEntries) {
+    for (const extension of extensions) {
+      try {
+        if ((await fs.stat(path.join(directory, `${commandName}${extension}`))).isFile()) {
+          return true
+        }
+      } catch {
+        // 继续检查下一个 PATH 条目。
+      }
+    }
+  }
+  return false
+}
+
+export async function isGitHubCopilotInstalled(
+  commandAvailable: (commandName: string) => Promise<boolean> = commandExists,
+): Promise<boolean> {
+  // ~/.copilot 也会被 IDE 集成创建，不能单独证明 Copilot CLI 已安装。
+  return commandAvailable("copilot")
 }
 
 export function getAgentGlobalSkillDirectories(agent: AgentEntry): string[] {
@@ -67,12 +98,9 @@ export const agentRegistry: Record<string, AgentEntry> = {
     name: "github-copilot",
     displayName: "GitHub Copilot",
     shortCode: "GC",
-    globalSkillsDir: path.join(home, ".copilot", "skills"),
+    globalSkillsDir: path.join(copilotHome, "skills"),
     additionalGlobalSkillsDirs: [path.join(configHome, "github-copilot", "skills")],
-    detectInstalled: () => anyDirExists([
-      path.join(home, ".copilot"),
-      path.join(configHome, "github-copilot"),
-    ]),
+    detectInstalled: isGitHubCopilotInstalled,
   },
   windsurf: {
     name: "windsurf",

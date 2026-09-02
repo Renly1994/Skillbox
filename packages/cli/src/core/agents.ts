@@ -7,6 +7,7 @@ import { AGENTS_DIR, SKILLS_SUBDIR } from "../constants.js";
 
 const home = os.homedir();
 const configHome = process.env.XDG_CONFIG_HOME || path.join(home, ".config");
+const copilotHome = process.env.COPILOT_HOME || path.join(home, ".copilot");
 const openCodeHome = process.env.OPENCODE_CONFIG_DIR || path.join(configHome, "opencode");
 const piAgentHome = process.env.PI_CODING_AGENT_DIR || path.join(home, ".pi", "agent");
 const factoryHome = process.env.FACTORY_HOME || path.join(home, ".factory");
@@ -25,6 +26,29 @@ async function dirExists(p: string): Promise<boolean> {
 
 async function anyDirExists(paths: string[]): Promise<boolean> {
   return (await Promise.all(paths.map(dirExists))).some(Boolean);
+}
+
+async function commandExists(commandName: string): Promise<boolean> {
+  const pathEntries = (process.env.PATH || "")
+    .split(path.delimiter)
+    .map((entry) => entry.replace(/^"|"$/g, ""))
+    .filter(Boolean);
+  const extensions = process.platform === "win32"
+    ? (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
+    : [""];
+
+  for (const directory of pathEntries) {
+    for (const extension of extensions) {
+      try {
+        if ((await fs.stat(path.join(directory, `${commandName}${extension}`))).isFile()) {
+          return true;
+        }
+      } catch {
+        // 继续检查下一个 PATH 条目。
+      }
+    }
+  }
+  return false;
 }
 
 // ---------- Agent Registry ----------
@@ -57,11 +81,9 @@ export const agents: Record<string, AgentConfig> = {
     name: "github-copilot",
     displayName: "GitHub Copilot",
     skillsDir: ".github/skills",
-    globalSkillsDir: path.join(home, ".copilot", "skills"),
-    detectInstalled: async () => anyDirExists([
-      path.join(home, ".copilot"),
-      path.join(configHome, "github-copilot"),
-    ]),
+    globalSkillsDir: path.join(copilotHome, "skills"),
+    // ~/.copilot 也会被 IDE 集成创建，只有 CLI 命令才作为安装信号。
+    detectInstalled: async () => commandExists("copilot"),
   },
 
   windsurf: {
