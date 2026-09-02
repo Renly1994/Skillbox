@@ -11,6 +11,7 @@ import { List } from "react-window"
 import { marked } from "marked"
 import { NavLink } from "react-router-dom"
 import { electronAPI } from "../lib/electron-api"
+import { normalizeInstalledSkills } from "../lib/installed-skill-normalize"
 import { useLocalization } from "../lib/localization"
 import { SkillEditor, type SkillEditorHandle } from "../components/skill-editor"
 import { AgentLogo, AgentLogoRow } from "../components/agent-logo"
@@ -214,7 +215,7 @@ interface DragToast {
   message: string
 }
 
-type SkillScopeFilter = "all" | "global" | "project"
+type SkillScopeFilter = "all" | "global" | "project" | "custom"
 
 // --------------------------------------------------------------------------
 // Left Sidebar Panel
@@ -537,7 +538,7 @@ const SkillListRow = memo(function SkillListRow({
           </span>
         </span>
         <span
-          title={skill.projectName || undefined}
+          title={skill.projectNames.length > 0 ? skill.projectNames.join("、") : undefined}
           className={`skillbox-scope-badge rounded border px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide ${
             skill.scope === "global"
               ? "border-blue-500/25 bg-blue-500/10 text-blue-300"
@@ -787,6 +788,7 @@ function MiddlePanel({
           <div className="skillbox-library-stats">
             <span><strong>{scopeCounts.global}</strong> 全局</span>
             <span><strong>{scopeCounts.project}</strong> 项目</span>
+            <span><strong>{scopeCounts.custom}</strong> 自定义</span>
             <span
               className="skillbox-library-stats-agents"
               title={skillAgentKeys
@@ -850,11 +852,12 @@ function MiddlePanel({
           </div>
         </div>
         <div className="skillbox-library-tools">
-        <div className="grid grid-cols-3 gap-1 rounded-lg border border-border bg-surface p-1">
+        <div className="grid grid-cols-4 gap-1 rounded-lg border border-border bg-surface p-1">
           {([
             ["all", "All scopes"],
             ["global", "Global"],
             ["project", "Project"],
+            ["custom", "Custom"],
           ] as const).map(([value, label]) => (
             <button
               key={value}
@@ -1973,9 +1976,9 @@ function RightPanel({
               <span className="rounded border border-border px-2 py-0.5">
                 scope: {skill.scope}
               </span>
-              {skill.projectName && (
+              {skill.projectNames.length > 0 && (
                 <span className="rounded border border-border px-2 py-0.5">
-                  project: {skill.projectName}
+                  project: {skill.projectNames.join("、")}
                 </span>
               )}
               <span className="rounded border border-border px-2 py-0.5">
@@ -2274,7 +2277,10 @@ function CollectionDialog({
 export function Home() {
   const { translate } = useLocalization()
   const [agents, setAgents] = useState<DetectedAgent[]>([])
-  const [skills, setSkills] = useState<InstalledSkill[]>([])
+  const [skills, setSkillsState] = useState<InstalledSkill[]>([])
+  const setSkills = useCallback((nextSkills: InstalledSkill[]) => {
+    setSkillsState(normalizeInstalledSkills(nextSkills))
+  }, [])
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
   const deferredSearchQuery = useDeferredValue(searchQuery)
@@ -2501,7 +2507,7 @@ export function Home() {
     }
 
     if (selectedProject) {
-      result = result.filter((skill) => skill.projectName === selectedProject)
+      result = result.filter((skill) => skill.projectNames.includes(selectedProject))
     }
 
     if (activeFilter === "favorites") {
@@ -2526,7 +2532,7 @@ export function Home() {
           (s.source && s.source.toLowerCase().includes(q)) ||
           s.path.toLowerCase().includes(q) ||
           s.canonicalPath.toLowerCase().includes(q) ||
-          (s.projectName && s.projectName.toLowerCase().includes(q)) ||
+          s.projectNames.some((projectName) => projectName.toLowerCase().includes(q)) ||
           s.supportingFiles.some((file) =>
             file.relativePath.toLowerCase().includes(q),
           ),
@@ -2550,13 +2556,14 @@ export function Home() {
     all: skills.length,
     global: skills.filter((skill) => skill.scope === "global").length,
     project: skills.filter((skill) => skill.scope === "project").length,
+    custom: skills.filter((skill) => skill.scope === "custom").length,
   }), [skills])
 
   const projectNames = useMemo(
     () => Array.from(new Set(
       skills
-        .filter((skill) => skill.scope === "project" && skill.projectName)
-        .map((skill) => skill.projectName as string),
+        .filter((skill) => skill.scope === "project")
+        .flatMap((skill) => skill.projectNames),
     )).sort((a, b) => a.localeCompare(b)),
     [skills],
   )

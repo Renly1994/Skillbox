@@ -5,6 +5,7 @@ import path from "node:path"
 import test from "node:test"
 import {
   compareSkillContents,
+  createSkillContentFingerprint,
   syncAgentCopyToMaster,
 } from "../src/main/version-sync"
 
@@ -34,6 +35,26 @@ test("相同内容位于不同目录时不算版本未同步", async () => {
     await fs.utimes(path.join(agentPath, "SKILL.md"), new Date(0), new Date(0))
 
     assert.deepEqual(await compareSkillContents(masterPath, agentPath), [])
+  })
+})
+
+test("内容指纹只由 Skill 的有效文件内容决定", async () => {
+  await withFixture(async (masterPath, agentPath) => {
+    await Promise.all([
+      fs.writeFile(path.join(masterPath, "SKILL.md"), "same content"),
+      fs.writeFile(path.join(agentPath, "SKILL.md"), "same content"),
+    ])
+
+    assert.equal(
+      await createSkillContentFingerprint(masterPath),
+      await createSkillContentFingerprint(agentPath),
+    )
+
+    await fs.writeFile(path.join(agentPath, "reference.md"), "extra content")
+    assert.notEqual(
+      await createSkillContentFingerprint(masterPath),
+      await createSkillContentFingerprint(agentPath),
+    )
   })
 })
 

@@ -89,7 +89,11 @@ export async function findCustomSkillLocations(
 
   await addSkill(resolvedRoot, "custom", null)
 
-  const genericSkills = await findSkillDirectories(resolvedRoot)
+  const genericSkills = await findSkillDirectories(resolvedRoot, {
+    stopAtNestedRepositories: true,
+    skipSymbolicLinks: true,
+    skipHiddenDirectories: true,
+  })
   for (const skill of genericSkills) {
     await addSkill(skill.path, "custom", null)
   }

@@ -4,35 +4,92 @@ interface VersionMismatch {
 
 interface MergeableSkill {
   name: string
+  path: string
   agents: string[]
   agentShortCodes: string[]
   scope: "global" | "project" | "custom"
+  projectName: string | null
+  projectNames?: string[]
+  contentFingerprint?: string | null
   versionMismatches: VersionMismatch[]
 }
 
+function getProjectSkillKey(skill: MergeableSkill, nameKey: string): string | null {
+  const normalizedPath = skill.path.replace(/\\/g, "/")
+  const match = normalizedPath.match(
+    /^(.*)\/(?:\.[^/]+\/(?:skills|rules)|data\/skills)\//i,
+  )
+  if (!match) return null
+  return `${match[1].toLowerCase()}\u0000${nameKey}`
+}
+
 /**
- * 项目级位置是全局母版的适配位置，不是第二个逻辑 Skill。
- * 仅在不存在同名全局母版时，才保留项目 Skill 的独立行。
+ * 同一 Skill 的全局母版、项目适配位置和自定义副本不是多个逻辑 Skill。
+ * 没有全局母版时，同一项目内不同 Agent 的同名副本也聚合为一行。
  */
 export function mergeProjectSkillsIntoGlobal<T extends MergeableSkill>(skills: T[]): T[] {
   const copies = skills.map((skill) => ({
     ...skill,
     agents: [...skill.agents],
     agentShortCodes: [...skill.agentShortCodes],
+    projectNames: [
+      ...(skill.projectNames ?? (skill.projectName ? [skill.projectName] : [])),
+    ],
     versionMismatches: [...skill.versionMismatches],
   })) as T[]
   const globalByName = new Map<string, T>()
+  const projectByName = new Map<string, T>()
+  const projectByContent = new Map<string, T>()
 
   for (const skill of copies) {
-    if (skill.scope !== "global") continue
-    const key = skill.name.trim().toLowerCase()
-    if (!globalByName.has(key)) globalByName.set(key, skill)
+    const nameKey = skill.name.trim().toLowerCase()
+    if (skill.scope === "global") {
+      if (!globalByName.has(nameKey)) globalByName.set(nameKey, skill)
+      continue
+    }
+    if (skill.scope !== "project" || skill.agents.length === 0) {
+      continue
+    }
+    const projectKey = getProjectSkillKey(skill, nameKey)
+    if (projectKey && !projectByName.has(projectKey)) {
+      projectByName.set(projectKey, skill)
+    }
+    if (skill.contentFingerprint) {
+      const contentKey = `${nameKey}\u0000${skill.contentFingerprint}`
+      if (!projectByContent.has(contentKey)) projectByContent.set(contentKey, skill)
+    }
   }
 
   return copies.filter((skill) => {
-    if (skill.scope !== "project" || skill.agents.length === 0) return true
-    const master = globalByName.get(skill.name.trim().toLowerCase())
+    if (skill.scope === "global") return true
+    const nameKey = skill.name.trim().toLowerCase()
+    const projectKey = getProjectSkillKey(skill, nameKey)
+    const contentKey = skill.contentFingerprint
+      ? `${nameKey}\u0000${skill.contentFingerprint}`
+      : null
+    const projectMaster = (
+      skill.scope === "project" && projectKey
+        ? projectByName.get(projectKey)
+        : undefined
+    )
+    const contentMaster = (
+      skill.scope === "project" && contentKey
+        ? projectByContent.get(contentKey)
+        : undefined
+    )
+    const master = globalByName.get(nameKey) ?? (
+      projectMaster !== skill ? projectMaster : undefined
+    ) ?? contentMaster ?? projectMaster
     if (!master) return true
+    if (skill.scope === "project" && skill.agents.length === 0) return true
+    if (master === skill) return true
+
+    const knownProjectNames = new Set(master.projectNames ?? [])
+    for (const projectName of skill.projectNames ?? []) {
+      if (knownProjectNames.has(projectName)) continue
+      master.projectNames?.push(projectName)
+      knownProjectNames.add(projectName)
+    }
 
     skill.agents.forEach((agent, index) => {
       if (master.agents.includes(agent)) return

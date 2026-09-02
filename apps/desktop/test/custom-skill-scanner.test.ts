@@ -111,6 +111,84 @@ test("可以递归发现自定义目录中的深层独立 Skill", async () => {
   })
 })
 
+test("添加工作区根目录时不把嵌套 Git 仓库的素材 Skill 当作已安装", async () => {
+  await withFixture(async (root) => {
+    const repository = path.join(root, "research", "downloaded-repository")
+    const repositorySkill = path.join(repository, "skills", "not-installed")
+    const projectSkill = path.join(repository, ".agents", "skills", "project-skill")
+    await fs.mkdir(path.join(repository, ".git"), { recursive: true })
+    await createSkill(repositorySkill, "not-installed")
+    await createSkill(projectSkill, "project-skill")
+
+    const locations = await findCustomSkillLocations(root, PROBES)
+
+    assert.deepEqual(locations.map((location) => location.canonicalPath), [
+      await fs.realpath(projectSkill),
+    ])
+    assert.equal(locations[0].scope, "project")
+  })
+})
+
+test("显式添加仓库本身时仍能扫描仓库中的 Skill 集合", async () => {
+  await withFixture(async (root) => {
+    const repositorySkill = path.join(root, "skills", "explicit-skill")
+    await fs.mkdir(path.join(root, ".git"), { recursive: true })
+    await createSkill(repositorySkill, "explicit-skill")
+
+    const locations = await findCustomSkillLocations(root, PROBES)
+
+    assert.equal(locations.length, 1)
+    assert.equal(locations[0].canonicalPath, await fs.realpath(repositorySkill))
+    assert.equal(locations[0].scope, "custom")
+  })
+})
+
+test("自定义扫描不会进入虚拟环境和工具依赖目录", async () => {
+  await withFixture(async (root) => {
+    const visibleSkill = path.join(root, "collections", "visible-skill")
+    await createSkill(visibleSkill, "visible-skill")
+    await createSkill(
+      path.join(root, "project", ".venv", "Lib", "site-packages", "dependency-skill"),
+      "dependency-skill",
+    )
+    await createSkill(
+      path.join(root, "project", ".tools", "runner", ".deps", "bundled-skill"),
+      "bundled-skill",
+    )
+
+    const locations = await findCustomSkillLocations(root, PROBES)
+
+    assert.deepEqual(locations.map((location) => location.canonicalPath), [
+      await fs.realpath(visibleSkill),
+    ])
+  })
+})
+
+test("自定义扫描不会跟随普通 Junction 跳到其他目录", async () => {
+  await withFixture(async (root) => {
+    const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), "skillbox-external-skill-"))
+    const externalSkill = path.join(externalRoot, "linked-skill")
+    const link = path.join(root, "generated-links", "linked-skill")
+    try {
+      await createSkill(externalSkill, "linked-skill")
+      await fs.mkdir(path.dirname(link), { recursive: true })
+      await fs.symlink(
+        process.platform === "win32"
+          ? externalSkill
+          : path.relative(path.dirname(link), externalSkill),
+        link,
+        process.platform === "win32" ? "junction" : undefined,
+      )
+
+      const locations = await findCustomSkillLocations(root, PROBES)
+
+      assert.equal(locations.length, 0)
+    } finally {
+      await fs.rm(externalRoot, { recursive: true, force: true })
+    }
+  })
+})
+
 test("项目内分组目录中的 Skill 保留 Agent 归属", async () => {
   await withFixture(async (root) => {
     const skillDir = path.join(

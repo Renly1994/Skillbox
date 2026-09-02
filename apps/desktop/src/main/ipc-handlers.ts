@@ -34,6 +34,7 @@ import {
 } from "./agent-registry"
 import {
   compareSkillContents,
+  createSkillContentFingerprint,
   syncAgentCopyToMaster,
   type SkillVersionChange,
 } from "./version-sync"
@@ -850,12 +851,39 @@ async function listInstalledSkillsInternal(
 
 /** Internal skill type that includes folderName for cache storage. */
 type InternalSkill = Awaited<ReturnType<typeof listInstalledSkillsInternal>>[number]
+type RendererSkill = Omit<InternalSkill, "folderName"> & { projectNames: string[] }
 
 /** Strip the internal folderName field before sending to the renderer. */
-function toRendererSkills(skills: InternalSkill[]) {
-  return mergeProjectSkillsIntoGlobal(skills).map(
-    ({ folderName: _, ...rest }) => rest,
-  ) as Array<Omit<InternalSkill, "folderName">>
+async function toRendererSkills(skills: InternalSkill[]): Promise<RendererSkill[]> {
+  const projectNameCounts = new Map<string, number>()
+  for (const skill of skills) {
+    if (skill.scope !== "project") continue
+    const key = skill.name.trim().toLowerCase()
+    projectNameCounts.set(key, (projectNameCounts.get(key) ?? 0) + 1)
+  }
+
+  const fingerprintByPath = new Map<string, Promise<string | null>>()
+  const prepared = await Promise.all(skills.map(async (skill) => {
+    const nameKey = skill.name.trim().toLowerCase()
+    let contentFingerprint: string | null = null
+    if (skill.scope === "project" && (projectNameCounts.get(nameKey) ?? 0) > 1) {
+      let fingerprint = fingerprintByPath.get(skill.canonicalPath)
+      if (!fingerprint) {
+        fingerprint = createSkillContentFingerprint(skill.canonicalPath).catch(() => null)
+        fingerprintByPath.set(skill.canonicalPath, fingerprint)
+      }
+      contentFingerprint = await fingerprint
+    }
+    return {
+      ...skill,
+      projectNames: skill.projectName ? [skill.projectName] : [],
+      contentFingerprint,
+    }
+  }))
+
+  return mergeProjectSkillsIntoGlobal(prepared).map(
+    ({ folderName: _, contentFingerprint: __, ...rest }) => rest,
+  ) as RendererSkill[]
 }
 
 /** Backward-compatible wrapper -- returns the renderer-safe shape. */
@@ -914,7 +942,7 @@ function persistCachedSkills(
 }
 
 function maybeBroadcastSkills(
-  raw: InternalSkill[],
+  skills: RendererSkill[],
   fingerprint: string,
   broadcast: boolean,
 ): void {
@@ -923,7 +951,7 @@ function maybeBroadcastSkills(
   }
 
   if (_mainWindow && !_mainWindow.isDestroyed()) {
-    _mainWindow.webContents.send("skills:updated", toRendererSkills(raw))
+    _mainWindow.webContents.send("skills:updated", skills)
   }
   lastBroadcastFingerprint = fingerprint
 }
@@ -962,8 +990,9 @@ async function runRescan(
     }
     clearSupportingFilesCache()
     const fingerprint = persistCachedSkills(raw, preserveCustomScope)
-    maybeBroadcastSkills(raw, fingerprint, broadcast)
-    return toRendererSkills(raw)
+    const rendered = await toRendererSkills(raw)
+    maybeBroadcastSkills(rendered, fingerprint, broadcast)
+    return rendered
   })().finally(() => {
     rescanInFlight.delete(key)
   })
@@ -1119,7 +1148,8 @@ async function rescanSingleSkill(changedPath: string): Promise<void> {
 
   clearSupportingFilesCache(resolvedDir ?? undefined)
   const fingerprint = persistCachedSkills(cached as InternalSkill[])
-  maybeBroadcastSkills(cached as InternalSkill[], fingerprint, true)
+  const rendered = await toRendererSkills(cached as InternalSkill[])
+  maybeBroadcastSkills(rendered, fingerprint, true)
 }
 
 // ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ declare global {
     agentShortCodes: string[]
     scope: "global" | "project" | "custom"
     projectName: string | null
+    projectNames: string[]
     hasSupportingFiles: boolean
     supportingFiles: Array<{
       relativePath: string

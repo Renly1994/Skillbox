@@ -68,6 +68,21 @@ async function snapshotSkill(rootPath: string): Promise<Map<string, string>> {
   return snapshot
 }
 
+/** 为 Skill 的全部有效文件生成与目录位置和时间戳无关的内容指纹。 */
+export async function createSkillContentFingerprint(rootPath: string): Promise<string> {
+  const snapshot = await snapshotSkill(rootPath)
+  const hash = crypto.createHash("sha256")
+  for (const [relativePath, fileHash] of [...snapshot.entries()].sort(([a], [b]) =>
+    a.localeCompare(b),
+  )) {
+    hash.update(relativePath)
+    hash.update("\0")
+    hash.update(fileHash)
+    hash.update("\0")
+  }
+  return hash.digest("hex")
+}
+
 /**
  * “版本未同步”只表示两个 Skill 目录的有效内容不同。
  * 目录位置、创建时间、修改时间以及顶层链接类型都不参与判定。
