@@ -38,6 +38,10 @@ export class FavoritesStore {
       .run(name)
   }
 
+  remove(name: string): void {
+    this.db.prepare("DELETE FROM favorites WHERE skill_name = ?").run(name)
+  }
+
   count(): number {
     const row = this.db
       .prepare("SELECT COUNT(*) as c FROM favorites")

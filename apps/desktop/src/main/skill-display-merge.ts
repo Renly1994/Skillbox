@@ -2,15 +2,25 @@ interface VersionMismatch {
   agentPath: string
 }
 
+interface SkillLocation {
+  path: string
+  canonicalPath: string
+  scope: "global" | "project" | "custom"
+  projectName: string | null
+  agents: string[]
+}
+
 interface MergeableSkill {
   name: string
   path: string
+  canonicalPath?: string
   agents: string[]
   agentShortCodes: string[]
   scope: "global" | "project" | "custom"
   projectName: string | null
   projectNames?: string[]
   contentFingerprint?: string | null
+  locations?: SkillLocation[]
   versionMismatches: VersionMismatch[]
 }
 
@@ -35,6 +45,13 @@ export function mergeProjectSkillsIntoGlobal<T extends MergeableSkill>(skills: T
     projectNames: [
       ...(skill.projectNames ?? (skill.projectName ? [skill.projectName] : [])),
     ],
+    locations: (skill.locations ?? [{
+      path: skill.path,
+      canonicalPath: skill.canonicalPath ?? skill.path,
+      scope: skill.scope,
+      projectName: skill.projectName,
+      agents: [...skill.agents],
+    }]).map((location) => ({ ...location, agents: [...location.agents] })),
     versionMismatches: [...skill.versionMismatches],
   })) as T[]
   const globalByName = new Map<string, T>()
@@ -77,7 +94,19 @@ export function mergeProjectSkillsIntoGlobal<T extends MergeableSkill>(skills: T
         ? projectByContent.get(contentKey)
         : undefined
     )
-    const master = globalByName.get(nameKey) ?? (
+    const globalMaster = globalByName.get(nameKey)
+    if (
+      globalMaster &&
+      skill.scope === "custom" &&
+      (
+        !globalMaster.contentFingerprint ||
+        !skill.contentFingerprint ||
+        globalMaster.contentFingerprint !== skill.contentFingerprint
+      )
+    ) {
+      return true
+    }
+    const master = globalMaster ?? (
       projectMaster !== skill ? projectMaster : undefined
     ) ?? contentMaster ?? projectMaster
     if (!master) return true
@@ -105,6 +134,16 @@ export function mergeProjectSkillsIntoGlobal<T extends MergeableSkill>(skills: T
       if (knownMismatchPaths.has(mismatch.agentPath)) continue
       master.versionMismatches.push(mismatch)
       knownMismatchPaths.add(mismatch.agentPath)
+    }
+
+    const knownLocationPaths = new Set(
+      (master.locations ?? []).map((location) => location.path.toLowerCase()),
+    )
+    for (const location of skill.locations ?? []) {
+      const locationKey = location.path.toLowerCase()
+      if (knownLocationPaths.has(locationKey)) continue
+      master.locations?.push({ ...location, agents: [...location.agents] })
+      knownLocationPaths.add(locationKey)
     }
 
     return false

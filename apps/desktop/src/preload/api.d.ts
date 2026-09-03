@@ -5,6 +5,7 @@ declare global {
     name: string
     displayName: string
     shortCode: string
+    isSharedSkillDirectory: boolean
   }
 
   interface InstalledSkill {
@@ -17,6 +18,7 @@ declare global {
     scope: "global" | "project" | "custom"
     projectName: string | null
     projectNames: string[]
+    locations: SkillLocation[]
     hasSupportingFiles: boolean
     supportingFiles: Array<{
       relativePath: string
@@ -44,6 +46,26 @@ declare global {
     success: boolean
     path: string
     error?: string
+  }
+
+  interface SkillLocation {
+    path: string
+    canonicalPath: string
+    scope: "global" | "project" | "custom"
+    projectName: string | null
+    agents: string[]
+  }
+
+  interface SkillRemovalRequest {
+    name: string
+    targets: Array<Pick<SkillLocation, "path" | "canonicalPath" | "scope" | "projectName">>
+  }
+
+  interface SkillRemovalResult {
+    skills: InstalledSkill[]
+    removedPaths: string[]
+    collections: Record<string, string[]>
+    errors: Array<{ path: string; message: string }>
   }
 
   interface SkillInstallProgress {
@@ -210,7 +232,7 @@ declare global {
       content?: string
       agentNames?: string[]
     }) => Promise<{ name: string; path: string; targets: string[] }>
-    removeSkill: (name: string) => Promise<void>
+    removeSkill: (request: SkillRemovalRequest) => Promise<SkillRemovalResult>
     updateSkill: (name: string) => Promise<void>
     readSkillContent: (path: string) => Promise<string>
     listSupportingFiles: (
@@ -219,7 +241,7 @@ declare global {
     readSupportingFile: (path: string, relativePath: string) => Promise<string>
     writeSkillContent: (filePath: string, content: string) => Promise<void>
     openInFinder: (filePath: string) => Promise<void>
-    removeFromAgent: (skillName: string, agentName: string) => Promise<void>
+    removeFromAgent: (request: SkillRemovalRequest, agentName: string) => Promise<void>
     addToAgent: (
       skillName: string,
       canonicalPath: string,

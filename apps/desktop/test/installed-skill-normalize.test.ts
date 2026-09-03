@@ -26,3 +26,22 @@ test("保留聚合结果中的多个项目归属且不修改原数组", () => {
   assert.deepEqual(normalized.projectNames, projectNames)
   assert.notEqual(normalized.projectNames, projectNames)
 })
+
+test("旧 IPC 数据缺少 locations 时使用当前真实路径补齐", () => {
+  const [normalized] = normalizeInstalledSkills([{
+    name: "demo",
+    path: "D:/project/.agents/skills/demo",
+    canonicalPath: "D:/project/.agents/skills/demo",
+    scope: "project" as const,
+    projectName: "project",
+    agents: ["通用 Skill 目录"],
+  }])
+
+  assert.deepEqual(normalized.locations, [{
+    path: "D:/project/.agents/skills/demo",
+    canonicalPath: "D:/project/.agents/skills/demo",
+    scope: "project",
+    projectName: "project",
+    agents: ["通用 Skill 目录"],
+  }])
+})

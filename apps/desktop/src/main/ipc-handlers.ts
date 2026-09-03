@@ -44,6 +44,17 @@ import {
 import { findSkillDirectories } from "./skill-directory-scanner"
 import { mergeProjectSkillsIntoGlobal } from "./skill-display-merge"
 import {
+  prepareAgentSkillTarget,
+  selectAgentSkillRemovalCandidates,
+} from "./agent-skill-target"
+import {
+  assertSafePathSegment,
+  isPathInside,
+  removeSkillPath,
+  validateSkillRemovalRequest,
+  type SkillRemovalRequest,
+} from "./skill-removal"
+import {
   acquireGitHubRepository,
   cleanupMarketplaceTempDirectories,
 } from "./github-repository-download"
@@ -145,6 +156,7 @@ interface AgentSkillBinding {
 }
 
 const CUSTOM_SCAN_PATHS_KEY = "scan.customPaths"
+const COLLECTIONS_KEY = "collections.skills"
 const DEFAULT_AGENTS_KEY = "install.defaultAgents"
 const MIRROR_AGENTS_KEY = "sync.mirrorAgents"
 const PENDING_AGENT_BINDINGS_KEY = "migration.pendingAgentBindings"
@@ -157,6 +169,7 @@ type DetectedAgentInfo = {
   name: string
   displayName: string
   shortCode: string
+  isSharedSkillDirectory: boolean
 }
 
 let cachedAgents: DetectedAgentInfo[] | null = null
@@ -198,7 +211,7 @@ function getScopeForPath(resolvedPath: string): "global" | "project" | "custom" 
     ...Object.values(agentRegistry).flatMap(getAgentGlobalSkillDirectories),
   ].map((root) => path.resolve(root))
 
-  if (globalRoots.some((root) => resolvedPath.startsWith(root))) {
+  if (globalRoots.some((root) => pathsEqual(resolvedPath, root) || isPathInside(root, resolvedPath))) {
     return "global"
   }
 
@@ -278,10 +291,11 @@ function isSkillPathAllowed(resolvedPath: string): boolean {
   if (
     Object.values(agentRegistry).some((agent) =>
       getAgentGlobalSkillDirectories(agent).some((skillsDir) =>
-        resolvedPath.startsWith(path.resolve(skillsDir)),
+        pathsEqual(resolvedPath, skillsDir) || isPathInside(skillsDir, resolvedPath),
       ),
     ) ||
-    resolvedPath.startsWith(path.resolve(CANONICAL_SKILLS_DIR))
+    pathsEqual(resolvedPath, CANONICAL_SKILLS_DIR) ||
+    isPathInside(CANONICAL_SKILLS_DIR, resolvedPath)
   ) {
     return true
   }
@@ -297,7 +311,7 @@ function isSkillPathAllowed(resolvedPath: string): boolean {
     const customScanPaths = settingsStore?.get<string[]>(CUSTOM_SCAN_PATHS_KEY, []) ?? []
     return customScanPaths.some((custom) => {
       const base = path.resolve(custom.replace(/^~(?=$|\/|\\)/, home))
-      return resolvedPath === base || resolvedPath.startsWith(base + path.sep)
+      return pathsEqual(resolvedPath, base) || isPathInside(base, resolvedPath)
     })
   } catch {
     return false
@@ -431,6 +445,14 @@ function sanitizeName(name: string): string {
     .replace(/^-+|-+$/g, "")
 }
 
+function getSkillFolderName(skillDir: string, skillName: string): string {
+  const sanitized = sanitizeName(skillName)
+  if (sanitized && sanitized !== "." && sanitized !== "..") {
+    return assertSafePathSegment(sanitized)
+  }
+  return assertSafePathSegment(path.basename(path.resolve(skillDir)))
+}
+
 interface SkillboxArchiveManifest {
   format: "skillbox-migration"
   version: 1
@@ -539,14 +561,14 @@ function pathsEqual(left: string, right: string): boolean {
 }
 
 async function moveAgentCopyToBackup(
-  skillName: string,
+  folderName: string,
   agentName: string,
   agentPath: string,
 ): Promise<string> {
   const backupRoot = path.join(
     SKILLBOX_BACKUPS_DIR,
     agentName,
-    sanitizeName(skillName),
+    assertSafePathSegment(folderName),
   )
   await fs.mkdir(backupRoot, { recursive: true })
   const backupPath = path.join(
@@ -557,22 +579,22 @@ async function moveAgentCopyToBackup(
   return backupPath
 }
 
-function getDetachedAgentCopyPath(skillName: string, agentName: string): string {
+function getDetachedAgentCopyPath(folderName: string, agentName: string): string {
   return path.join(
     DETACHED_AGENT_COPIES_DIR,
     agentName,
-    sanitizeName(skillName),
+    assertSafePathSegment(folderName),
   )
 }
 
 async function detachAgentCopy(
-  skillName: string,
+  folderName: string,
   agentName: string,
   agentPath: string,
 ): Promise<string> {
-  const detachedPath = getDetachedAgentCopyPath(skillName, agentName)
+  const detachedPath = getDetachedAgentCopyPath(folderName, agentName)
   if (await dirExists(detachedPath)) {
-    await moveAgentCopyToBackup(skillName, agentName, detachedPath)
+    await moveAgentCopyToBackup(folderName, agentName, detachedPath)
   }
   await fs.mkdir(path.dirname(detachedPath), { recursive: true })
   await fs.rename(agentPath, detachedPath)
@@ -580,16 +602,16 @@ async function detachAgentCopy(
 }
 
 async function restoreDetachedAgentCopy(
-  skillName: string,
+  folderName: string,
   agent: AgentEntry,
 ): Promise<boolean> {
-  const detachedPath = getDetachedAgentCopyPath(skillName, agent.name)
+  const detachedPath = getDetachedAgentCopyPath(folderName, agent.name)
   if (!(await dirExists(detachedPath))) return false
   if (!(await fileExists(path.join(detachedPath, "SKILL.md")))) {
     throw new Error("暂存的 Agent 副本缺少 SKILL.md，无法恢复")
   }
 
-  const agentPath = path.join(agent.globalSkillsDir, sanitizeName(skillName))
+  const agentPath = path.join(agent.globalSkillsDir, assertSafePathSegment(folderName))
   if (await dirExists(agentPath)) {
     throw new Error("Agent 目录中已存在同名 Skill，无法恢复暂存副本")
   }
@@ -647,6 +669,8 @@ async function detectAgents(): Promise<DetectedAgentInfo[]> {
             name: agent.name,
             displayName: agent.displayName,
             shortCode: agent.shortCode,
+            isSharedSkillDirectory:
+              agent.name !== "universal" && pathsEqual(agent.globalSkillsDir, CANONICAL_SKILLS_DIR),
           })
         }
       } catch {
@@ -851,22 +875,197 @@ async function listInstalledSkillsInternal(
 
 /** Internal skill type that includes folderName for cache storage. */
 type InternalSkill = Awaited<ReturnType<typeof listInstalledSkillsInternal>>[number]
-type RendererSkill = Omit<InternalSkill, "folderName"> & { projectNames: string[] }
+type RendererSkill = Omit<InternalSkill, "folderName"> & {
+  projectNames: string[]
+  locations: Array<{
+    path: string
+    canonicalPath: string
+    scope: "global" | "project" | "custom"
+    projectName: string | null
+    agents: string[]
+  }>
+}
+
+type RendererSkillLocation = RendererSkill["locations"][number]
+
+async function collectGlobalSkillLocations(): Promise<Map<string, RendererSkillLocation[]>> {
+  const byName = new Map<string, RendererSkillLocation[]>()
+  const agents = await getDetectedAgentEntries()
+  for (const agent of agents) {
+    for (const skillsDir of getAgentGlobalSkillDirectories(agent)) {
+      for (const discovered of await findSkillDirectories(skillsDir)) {
+        const parsed = await parseSkillMd(path.join(discovered.path, "SKILL.md"))
+        if (!parsed) continue
+        const key = parsed.name.trim().toLowerCase()
+        const locations = byName.get(key) ?? []
+        const existing = locations.find((location) => pathsEqual(location.path, discovered.path))
+        if (existing) {
+          if (!existing.agents.includes(agent.displayName)) existing.agents.push(agent.displayName)
+        } else {
+          locations.push({
+            path: discovered.path,
+            canonicalPath: discovered.canonicalPath,
+            scope: "global",
+            projectName: null,
+            agents: [agent.displayName],
+          })
+        }
+        byName.set(key, locations)
+      }
+    }
+  }
+  return byName
+}
+
+function getSkillRemovalRoots(): string[] {
+  ensureStores()
+  const customRoots = settingsStore?.get<string[]>(CUSTOM_SCAN_PATHS_KEY, []) ?? []
+  return Array.from(new Set([
+    CANONICAL_SKILLS_DIR,
+    ...Object.values(agentRegistry).flatMap(getAgentGlobalSkillDirectories),
+    ...customRoots.map((custom) => path.resolve(custom.replace(/^~(?=$|\/|\\)/, home))),
+  ].map((root) => path.resolve(root))))
+}
+
+function pathComparisonKey(value: string): string {
+  const resolved = path.resolve(value)
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved
+}
+
+async function buildSkillRemovalPlan(input: SkillRemovalRequest): Promise<{
+  request: SkillRemovalRequest
+  paths: Array<{ path: string; scope: "global" | "project" | "custom" }>
+}> {
+  const roots = getSkillRemovalRoots()
+  const request = validateSkillRemovalRequest(input, roots)
+  const planned = new Map<string, { path: string; scope: "global" | "project" | "custom" }>()
+  const expectedName = request.name.toLowerCase()
+
+  const addPath = async (
+    targetPath: string,
+    scope: "global" | "project" | "custom",
+  ): Promise<void> => {
+    const resolved = path.resolve(targetPath)
+    validateSkillRemovalRequest({
+      name: request.name,
+      targets: [{ path: resolved, canonicalPath: resolved, scope }],
+    }, roots)
+    const parsed = await parseSkillMd(path.join(resolved, "SKILL.md"))
+    if (!parsed || parsed.name.trim().toLowerCase() !== expectedName) {
+      throw new Error(`删除目标与当前 Skill 身份不一致：${resolved}`)
+    }
+    planned.set(pathComparisonKey(resolved), { path: resolved, scope })
+  }
+
+  const currentSkills = await listInstalledSkillsInternal()
+  for (const target of request.targets) {
+    await addPath(target.path, target.scope)
+    if (target.scope !== "global") continue
+
+    const selectedRealPath = await fs.realpath(target.path)
+    const selectedRealKey = pathComparisonKey(selectedRealPath)
+
+    // 只清理确实指向同一母本的 Agent/项目 Junction。同名但实体内容
+    // 不同的目录 realpath 不同，不会被纳入删除计划。
+    for (const skill of currentSkills) {
+      if (skill.name.trim().toLowerCase() !== expectedName) continue
+      const realPath = await fs.realpath(skill.path).catch(() => null)
+      if (!realPath || pathComparisonKey(realPath) !== selectedRealKey) continue
+      await addPath(skill.path, skill.scope)
+    }
+
+    for (const agent of Object.values(agentRegistry)) {
+      for (const skillsDir of getAgentGlobalSkillDirectories(agent)) {
+        const discovered = await findSkillDirectories(skillsDir)
+        for (const location of discovered) {
+          if (pathComparisonKey(location.canonicalPath) !== selectedRealKey) continue
+          await addPath(location.path, "global")
+        }
+      }
+    }
+
+    if (roots.some((root) => isPathInside(root, selectedRealPath))) {
+      await addPath(selectedRealPath, getScopeForPath(selectedRealPath))
+    }
+  }
+
+  const paths = Array.from(planned.values())
+  for (let index = 0; index < paths.length; index += 1) {
+    for (let other = index + 1; other < paths.length; other += 1) {
+      if (
+        isPathInside(paths[index].path, paths[other].path) ||
+        isPathInside(paths[other].path, paths[index].path)
+      ) {
+        throw new Error("删除计划包含相互嵌套的 Skill 目录，已拒绝执行")
+      }
+    }
+  }
+  return { request, paths }
+}
+
+async function resolveAgentSkillBinding(
+  input: SkillRemovalRequest,
+  agent: AgentEntry,
+): Promise<{
+  request: SkillRemovalRequest
+  bindings: Array<{ skillPath: string; folderName: string }>
+}> {
+  const request = validateSkillRemovalRequest(input, getSkillRemovalRoots())
+  const expectedName = request.name.toLowerCase()
+  const selectedRealPaths = new Set<string>()
+  for (const target of request.targets) {
+    const realPath = await fs.realpath(target.path).catch(() => null)
+    if (realPath) selectedRealPaths.add(pathComparisonKey(realPath))
+  }
+
+  const matches: Array<{ path: string; canonicalPath: string }> = []
+  for (const skillsDir of getAgentGlobalSkillDirectories(agent)) {
+    const discovered = await findSkillDirectories(skillsDir)
+    for (const location of discovered) {
+      const parsed = await parseSkillMd(path.join(location.path, "SKILL.md"))
+      if (!parsed || parsed.name.trim().toLowerCase() !== expectedName) continue
+      matches.push(location)
+    }
+  }
+  const candidates = selectAgentSkillRemovalCandidates(matches, selectedRealPaths)
+  if (!candidates) {
+    throw new Error(`${agent.displayName} 中存在多个同名 Skill，无法安全判断删除目标`)
+  }
+  if (candidates.length === 0) {
+    throw new Error(`${agent.displayName} 中未找到当前 Skill 的适配位置`)
+  }
+  return {
+    request,
+    bindings: candidates.map((candidate) => {
+      const skillPath = path.resolve(candidate.path)
+      validateSkillRemovalRequest({
+        name: request.name,
+        targets: [{ path: skillPath, canonicalPath: candidate.canonicalPath, scope: "global" }],
+      }, getSkillRemovalRoots())
+      return {
+        skillPath,
+        folderName: assertSafePathSegment(path.basename(skillPath)),
+      }
+    }),
+  }
+}
 
 /** Strip the internal folderName field before sending to the renderer. */
 async function toRendererSkills(skills: InternalSkill[]): Promise<RendererSkill[]> {
-  const projectNameCounts = new Map<string, number>()
+  const globalLocationsByName = skills.some((skill) => skill.scope === "global")
+    ? await collectGlobalSkillLocations()
+    : new Map<string, RendererSkillLocation[]>()
+  const nameCounts = new Map<string, number>()
   for (const skill of skills) {
-    if (skill.scope !== "project") continue
     const key = skill.name.trim().toLowerCase()
-    projectNameCounts.set(key, (projectNameCounts.get(key) ?? 0) + 1)
+    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1)
   }
 
   const fingerprintByPath = new Map<string, Promise<string | null>>()
   const prepared = await Promise.all(skills.map(async (skill) => {
     const nameKey = skill.name.trim().toLowerCase()
     let contentFingerprint: string | null = null
-    if (skill.scope === "project" && (projectNameCounts.get(nameKey) ?? 0) > 1) {
+    if ((nameCounts.get(nameKey) ?? 0) > 1) {
       let fingerprint = fingerprintByPath.get(skill.canonicalPath)
       if (!fingerprint) {
         fingerprint = createSkillContentFingerprint(skill.canonicalPath).catch(() => null)
@@ -877,6 +1076,17 @@ async function toRendererSkills(skills: InternalSkill[]): Promise<RendererSkill[
     return {
       ...skill,
       projectNames: skill.projectName ? [skill.projectName] : [],
+      locations: (
+        skill.scope === "global"
+          ? globalLocationsByName.get(nameKey)
+          : undefined
+      )?.map((location) => ({ ...location, agents: [...location.agents] })) ?? [{
+          path: skill.path,
+          canonicalPath: skill.canonicalPath,
+          scope: skill.scope,
+          projectName: skill.projectName,
+          agents: [...skill.agents],
+        }],
       contentFingerprint,
     }
   }))
@@ -1301,9 +1511,9 @@ async function installSkillToAgent(
   skillName: string,
   agent: AgentEntry,
 ): Promise<{ success: boolean; error?: string }> {
-  const safeName = sanitizeName(skillName)
-  const agentTargetDir = path.join(agent.globalSkillsDir, safeName)
-  const canonicalDir = path.join(CANONICAL_SKILLS_DIR, safeName)
+  const folderName = getSkillFolderName(skillDir, skillName)
+  const agentTargetDir = path.join(agent.globalSkillsDir, folderName)
+  const canonicalDir = path.join(CANONICAL_SKILLS_DIR, folderName)
 
   try {
     // Ensure agent skills directory exists
@@ -1314,31 +1524,41 @@ async function installSkillToAgent(
       if (path.resolve(skillDir) === path.resolve(canonicalDir)) {
         return { success: true }
       }
-      // Copy skill files directly to the canonical dir
-      await fs.rm(canonicalDir, { recursive: true, force: true }).catch(() => {})
-      await fs.cp(skillDir, canonicalDir, { recursive: true })
+      let backupPath: string | null = null
+      if (await dirExists(canonicalDir)) {
+        backupPath = await moveAgentCopyToBackup(folderName, "universal", canonicalDir)
+      }
+      try {
+        await fs.cp(skillDir, canonicalDir, { recursive: true })
+      } catch (error) {
+        if (backupPath) {
+          await fs.rm(canonicalDir, { recursive: true, force: true }).catch(() => {})
+          await fs.rename(backupPath, canonicalDir)
+        }
+        throw error
+      }
       return { success: true }
     }
 
     // Ensure canonical dir has the skill
     if (!(await dirExists(canonicalDir))) {
-      await fs.cp(skillDir, canonicalDir, { recursive: true })
+      try {
+        await fs.cp(skillDir, canonicalDir, { recursive: true })
+      } catch (error) {
+        // canonicalDir 是本次新建的未完成副本，不包含用户原有数据。
+        await fs.rm(canonicalDir, { recursive: true, force: true }).catch(() => {})
+        throw error
+      }
     }
+
+    await prepareAgentSkillTarget(agentTargetDir, canonicalDir, async (targetPath) => {
+      await detachAgentCopy(folderName, agent.name, targetPath)
+    }, async (targetPath) => {
+      await moveAgentCopyToBackup(folderName, agent.name, targetPath)
+    })
 
     // Try symlink from agent dir to canonical dir
     try {
-      // Remove existing target
-      try {
-        const stat = await fs.lstat(agentTargetDir)
-        if (stat.isSymbolicLink()) {
-          await fs.unlink(agentTargetDir)
-        } else {
-          await fs.rm(agentTargetDir, { recursive: true, force: true })
-        }
-      } catch {
-        // Target doesn't exist, that's fine
-      }
-
       const relativePath = path.relative(
         path.dirname(agentTargetDir),
         canonicalDir,
@@ -1352,10 +1572,18 @@ async function installSkillToAgent(
       return { success: true }
     } catch {
       // Symlink failed, fall back to copy
-      await fs.rm(agentTargetDir, { recursive: true, force: true }).catch(
-        () => {},
-      )
-      await fs.cp(skillDir, agentTargetDir, { recursive: true })
+      await prepareAgentSkillTarget(agentTargetDir, canonicalDir, async (targetPath) => {
+        await detachAgentCopy(folderName, agent.name, targetPath)
+      }, async (targetPath) => {
+        await moveAgentCopyToBackup(folderName, agent.name, targetPath)
+      })
+      try {
+        await fs.cp(canonicalDir, agentTargetDir, { recursive: true })
+      } catch (error) {
+        // 仅清理由本次降级复制创建的不完整目录。
+        await fs.rm(agentTargetDir, { recursive: true, force: true }).catch(() => {})
+        throw error
+      }
       return { success: true }
     }
   } catch (err) {
@@ -1707,7 +1935,7 @@ export function registerIpcHandlers(): void {
         throw new Error("Access denied: path is outside skill directories")
       }
       const filePath = path.resolve(resolved, relativePath)
-      if (!filePath.startsWith(resolved)) {
+      if (!isPathInside(resolved, filePath)) {
         throw new Error("Access denied: invalid supporting file path")
       }
       return fs.readFile(filePath, "utf-8")
@@ -2599,39 +2827,67 @@ Add your skill instructions here.
     },
   )
 
-  // Remove a skill from all agents + canonical dir + lock file
-  ipcMain.handle("skills:remove", async (_event, name: string) => {
-    const safeName = sanitizeName(name)
+  // 按扫描得到的真实位置删除。实体目录进入系统回收站，Junction 只解除链接；
+  // 不再根据名称推算路径，避免同名误删和空名称导致的目录越界。
+  ipcMain.handle("skills:remove", async (_event, input: SkillRemovalRequest) => {
+    const plan = await buildSkillRemovalPlan(input)
+    const removedPaths: string[] = []
+    const errors: Array<{ path: string; message: string }> = []
 
-    // Remove from all agent directories
-    for (const agent of Object.values(agentRegistry)) {
-      for (const skillsDir of getAgentGlobalSkillDirectories(agent)) {
-        const targetDir = path.join(skillsDir, safeName)
-        try {
-          const stat = await fs.lstat(targetDir)
-          if (stat.isSymbolicLink()) {
-            await fs.unlink(targetDir)
-          } else {
-            await fs.rm(targetDir, { recursive: true, force: true })
-          }
-        } catch {
-          // Directory doesn't exist for this agent
-        }
+    const classified = await Promise.all(plan.paths.map(async (target) => ({
+      ...target,
+      stat: await fs.lstat(target.path),
+    })))
+    classified.sort((left, right) =>
+      Number(right.stat.isSymbolicLink()) - Number(left.stat.isSymbolicLink()),
+    )
+
+    for (const target of classified) {
+      try {
+        await removeSkillPath(target.path, {
+          lstat: (targetPath) => fs.lstat(targetPath),
+          unlink: (targetPath) => fs.unlink(targetPath),
+          trash: (targetPath) => shell.trashItem(targetPath),
+        })
+        removedPaths.push(target.path)
+      } catch (error) {
+        errors.push({
+          path: target.path,
+          message: error instanceof Error ? error.message : String(error),
+        })
       }
     }
 
-    // Remove canonical directory
-    const canonicalDir = path.join(CANONICAL_SKILLS_DIR, safeName)
-    try {
-      await fs.rm(canonicalDir, { recursive: true, force: true })
-    } catch {
-      // Best effort
-    }
+    const removedKeys = new Set(removedPaths.map(pathComparisonKey))
 
-    // Remove from lock file
-    const lock = await readSkillLock()
-    delete lock.skills[safeName]
-    await writeSkillLock(lock)
+    ensureStores()
+    const collections = settingsStore.get<Record<string, string[]>>(COLLECTIONS_KEY, {})
+    const removedCollectionPaths = new Set(removedPaths.map(pathComparisonKey))
+    const nextCollections = Object.fromEntries(
+      Object.entries(collections).map(([name, items]) => [
+        name,
+        items.filter((item) => !removedCollectionPaths.has(pathComparisonKey(item))),
+      ]),
+    )
+    settingsStore.set(COLLECTIONS_KEY, nextCollections)
+
+    const skills = await rescanAndCache()
+    const stillHasGlobalSkill = skills.some((skill) =>
+      skill.scope === "global" &&
+      skill.name.trim().toLowerCase() === plan.request.name.toLowerCase(),
+    )
+    if (!stillHasGlobalSkill) {
+      const lock = await readSkillLock()
+      for (const target of plan.paths) {
+        if (target.scope !== "global" || !removedKeys.has(pathComparisonKey(target.path))) continue
+        delete lock.skills[path.basename(target.path)]
+      }
+      await writeSkillLock(lock)
+    }
+    if (!skills.some((skill) => skill.name.trim().toLowerCase() === plan.request.name.toLowerCase())) {
+      favoritesStore.remove(plan.request.name)
+    }
+    return { skills, removedPaths, collections: nextCollections, errors }
   })
 
   // Update a skill (re-install from source)
@@ -2800,7 +3056,17 @@ Add your skill instructions here.
       ensureStores()
       const server = serverStore.get(serverId)
       if (!server) throw new Error("Server not found")
-      const result = await applyPush(server, preview)
+      const freshPreview = await planPush(server, { mirror: preview?.mirror === true })
+      const signature = (value: PushPreview) => JSON.stringify({
+        mirror: value.mirror,
+        add: value.toAdd.map((entry) => [entry.folderName, entry.remoteDir]).sort(),
+        update: value.toUpdate.map((entry) => [entry.folderName, entry.remoteDir]).sort(),
+        delete: value.toDelete.map((entry) => [entry.folderName, entry.remoteDir]).sort(),
+      })
+      if (signature(preview) !== signature(freshPreview)) {
+        throw new Error("远程目录已变化，删除清单已失效，请重新预览后再执行")
+      }
+      const result = await applyPush(server, freshPreview)
       // Refresh remote_skills cache so the UI shows post-push state correctly
       try {
         await syncRemoteServer(
@@ -2945,42 +3211,61 @@ Add your skill instructions here.
   })
 
   // Disable a skill for one agent. Modified physical copies are detached and restored on re-enable.
-  ipcMain.handle("skills:remove-from-agent", async (_, skillName: string, agentName: string) => {
-    const safeName = sanitizeName(skillName)
+  ipcMain.handle("skills:remove-from-agent", async (_, input: SkillRemovalRequest, agentName: string) => {
     const agent = agentRegistry[agentName]
     if (!agent) throw new Error(`Unknown agent: ${agentName}`)
-    const skillPath = path.join(agent.globalSkillsDir, safeName)
-    const canonicalDir = path.join(CANONICAL_SKILLS_DIR, safeName)
-    if (path.resolve(skillPath) === path.resolve(canonicalDir)) {
-      throw new Error("The local master copy cannot be disabled as an agent")
+    if (pathsEqual(agent.globalSkillsDir, CANONICAL_SKILLS_DIR)) {
+      throw new Error(`${agent.displayName} 直接使用通用 Skill 目录，不存在可单独移除的适配入口`)
     }
     try {
-      if (!(await dirExists(canonicalDir)) && await dirExists(skillPath)) {
-        await fs.mkdir(CANONICAL_SKILLS_DIR, { recursive: true })
-        await fs.cp(skillPath, canonicalDir, { recursive: true })
-      }
-      const stat = await fs.lstat(skillPath)
-      if (stat.isSymbolicLink()) {
-        await fs.unlink(skillPath)
-        return { backupPath: null }
-      }
-      if (!stat.isDirectory()) {
-        throw new Error("Agent 适配位置不是 Skill 目录")
-      }
+      const resolved = await resolveAgentSkillBinding(input, agent)
+      const preservedCopyPaths: string[] = []
+      for (const binding of resolved.bindings) {
+        const { skillPath, folderName } = binding
+        const masterTarget = resolved.request.targets
+          .flatMap((target) => [target.path, target.canonicalPath])
+          .map((targetPath) => path.resolve(targetPath))
+          .find((targetPath) =>
+            isPathInside(CANONICAL_SKILLS_DIR, targetPath) &&
+            pathsEqual(path.basename(targetPath), folderName),
+          )
+        const canonicalDir = masterTarget ?? path.join(CANONICAL_SKILLS_DIR, folderName)
+        if (pathsEqual(skillPath, canonicalDir)) {
+          throw new Error("通用 Skill 母本不能作为普通 Agent 关闭")
+        }
+        if (!(await dirExists(canonicalDir)) && await dirExists(skillPath)) {
+          await fs.mkdir(CANONICAL_SKILLS_DIR, { recursive: true })
+          try {
+            await fs.cp(skillPath, canonicalDir, { recursive: true })
+          } catch (error) {
+            // canonicalDir 是本次新建的未完成副本，原 Agent 副本仍保持不动。
+            await fs.rm(canonicalDir, { recursive: true, force: true }).catch(() => {})
+            throw error
+          }
+        }
+        const stat = await fs.lstat(skillPath)
+        if (stat.isSymbolicLink()) {
+          await fs.unlink(skillPath)
+          continue
+        }
+        if (!stat.isDirectory()) {
+          throw new Error("Agent 适配位置不是 Skill 目录")
+        }
 
-      let hasContentDifference = true
-      try {
-        hasContentDifference = (await compareSkillContents(canonicalDir, skillPath)).length > 0
-      } catch {
-        // 比对失败时优先保留副本，避免关闭开关造成不可恢复的数据丢失。
-      }
-      if (hasContentDifference) {
-        const preservedCopyPath = await detachAgentCopy(safeName, agent.name, skillPath)
-        return { backupPath: null, preservedCopyPath }
-      }
+        let hasContentDifference = true
+        try {
+          hasContentDifference = (await compareSkillContents(canonicalDir, skillPath)).length > 0
+        } catch {
+          // 比对失败时优先保留副本，避免关闭开关造成不可恢复的数据丢失。
+        }
+        if (hasContentDifference) {
+          preservedCopyPaths.push(await detachAgentCopy(folderName, agent.name, skillPath))
+          continue
+        }
 
-      await fs.rm(skillPath, { recursive: true, force: true })
-      return { backupPath: null }
+        preservedCopyPaths.push(await moveAgentCopyToBackup(folderName, agent.name, skillPath))
+      }
+      return { backupPath: null, preservedCopyPaths }
     } catch (err) {
       throw new Error(`Failed to remove: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -2989,7 +3274,6 @@ Add your skill instructions here.
   ipcMain.handle(
     "skills:add-to-agent",
     async (_event, skillName: string, canonicalPath: string, agentName: string) => {
-      const safeName = sanitizeName(skillName)
       const agent = agentRegistry[agentName]
       if (!agent) throw new Error(`Unknown agent: ${agentName}`)
 
@@ -3007,11 +3291,12 @@ Add your skill instructions here.
         throw new Error("Access denied: source is not a readable local skill")
       }
 
-      if (await restoreDetachedAgentCopy(safeName, agent)) {
+      const folderName = getSkillFolderName(sourceDir, skillName)
+      if (await restoreDetachedAgentCopy(folderName, agent)) {
         return { restoredDetachedCopy: true }
       }
 
-      const result = await installSkillToAgent(sourceDir, safeName, agent)
+      const result = await installSkillToAgent(sourceDir, skillName, agent)
       if (!result.success) {
         throw new Error(result.error || "Failed to add skill to target agent")
       }
@@ -3025,7 +3310,6 @@ Add your skill instructions here.
       if (!agent) {
         throw new Error(`Unknown agent: ${agentName}`)
       }
-      const safeName = sanitizeName(skillName)
       const resolvedAgentPath = path.resolve(agentPath)
       if (
         !isSkillPathAllowed(resolvedAgentPath) ||
@@ -3033,10 +3317,11 @@ Add your skill instructions here.
       ) {
         throw new Error("独立副本路径无效或不在已授权的扫描目录中")
       }
+      const folderName = assertSafePathSegment(path.basename(resolvedAgentPath))
       return syncAgentCopyToMaster({
-        skillName: safeName,
+        skillName,
         agentName: agent.name,
-        masterPath: path.join(CANONICAL_SKILLS_DIR, safeName),
+        masterPath: path.join(CANONICAL_SKILLS_DIR, folderName),
         agentPath: resolvedAgentPath,
         backupRoot: SKILLBOX_BACKUPS_DIR,
       })

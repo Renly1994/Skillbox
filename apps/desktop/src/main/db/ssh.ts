@@ -6,6 +6,7 @@ import crypto from "node:crypto"
 import type { RemoteServer } from "./servers"
 import type { RemoteServerStore } from "./servers"
 import type { RemoteSkillStore } from "./skills"
+import { assertRemoteSkillDeletePath } from "./remote-delete-safety"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -399,16 +400,8 @@ export async function deleteRemoteSkillDir(
   server: RemoteServer,
   remoteSkillDir: string,
 ): Promise<void> {
-  const quoted = shellQuotePath(remoteSkillDir)
-  // Refuse to delete the entire skills base path or anything ending in '/'
-  if (
-    !remoteSkillDir ||
-    remoteSkillDir === "/" ||
-    remoteSkillDir === server.skillsBasePath ||
-    remoteSkillDir === server.skillsBasePath.replace(/\/+$/, "")
-  ) {
-    throw new Error(`Refusing to delete suspicious remote path: ${remoteSkillDir}`)
-  }
+  const safeTarget = assertRemoteSkillDeletePath(server.skillsBasePath, remoteSkillDir)
+  const quoted = shellQuotePath(safeTarget)
   const result = await sshExec(server, `rm -rf ${quoted}`)
   if (result.exitCode !== 0) {
     throw new Error(result.stderr.trim() || `rm -rf failed for ${remoteSkillDir}`)

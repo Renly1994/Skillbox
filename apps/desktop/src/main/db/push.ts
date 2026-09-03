@@ -11,6 +11,7 @@ import {
   deleteRemoteSkillDir,
 } from "./ssh"
 import { listInstalledSkillsInternal } from "../ipc-handlers"
+import { isPathInside } from "../skill-removal"
 
 const home = os.homedir()
 const CANONICAL_SKILLS_DIR = path.join(home, ".agents", "skills")
@@ -72,7 +73,7 @@ export async function planPush(
   const localCanonical = allLocal.filter(
     (s) =>
       s.scope === "global" &&
-      path.resolve(s.canonicalPath).startsWith(path.resolve(CANONICAL_SKILLS_DIR)),
+      isPathInside(CANONICAL_SKILLS_DIR, s.canonicalPath),
   )
 
   // 2. Hash each local SKILL.md

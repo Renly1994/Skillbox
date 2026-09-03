@@ -57,7 +57,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
     content?: string
     agentNames?: string[]
   }) => ipcRenderer.invoke("skills:create", data),
-  removeSkill: (name: string) => ipcRenderer.invoke("skills:remove", name),
+  removeSkill: (request: {
+    name: string
+    targets: Array<{
+      path: string
+      canonicalPath: string
+      scope: "global" | "project" | "custom"
+      projectName?: string | null
+    }>
+  }) => ipcRenderer.invoke("skills:remove", request),
   updateSkill: (name: string) => ipcRenderer.invoke("skills:update", name),
   readSkillContent: (skillPath: string) =>
     ipcRenderer.invoke("skill:read-content", skillPath),
@@ -69,8 +77,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("skill:write-content", filePath, content),
   openInFinder: (filePath: string) =>
     ipcRenderer.invoke("skill:open-in-finder", filePath),
-  removeFromAgent: (skillName: string, agentName: string) =>
-    ipcRenderer.invoke("skills:remove-from-agent", skillName, agentName),
+  removeFromAgent: (request: {
+    name: string
+    targets: Array<{
+      path: string
+      canonicalPath: string
+      scope: "global" | "project" | "custom"
+      projectName?: string | null
+    }>
+  }, agentName: string) =>
+    ipcRenderer.invoke("skills:remove-from-agent", request, agentName),
   addToAgent: (skillName: string, canonicalPath: string, agentName: string) =>
     ipcRenderer.invoke("skills:add-to-agent", skillName, canonicalPath, agentName),
   syncAgentCopyToMaster: (skillName: string, agentName: string, agentPath: string) =>

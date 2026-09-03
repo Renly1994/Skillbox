@@ -29,6 +29,13 @@ function createSkill(
     projectName,
     projectNames: projectName ? [projectName] : [],
     contentFingerprint,
+    locations: [{
+      path: canonicalPath,
+      canonicalPath,
+      scope,
+      projectName,
+      agents: [...agents],
+    }],
     versionMismatches,
   }
 }
@@ -42,6 +49,10 @@ test("同名项目副本与全局母版聚合为一行并汇总 Agent", () => {
   assert.equal(merged.length, 1)
   assert.deepEqual(merged[0].agents, ["通用 Skill 目录", "Claude Code"])
   assert.deepEqual(merged[0].agentShortCodes, ["UA", "CC"])
+  assert.deepEqual(merged[0].locations.map((location) => location.path), [
+    "C:/Users/test/.agents/skills/finesse-ui",
+    "D:/project/.claude/skills/finesse-ui",
+  ])
 })
 
 test("同名项目副本内容不同时仍为一行，并保留版本差异", () => {
@@ -157,10 +168,19 @@ test("没有 Agent 归属的项目内容不作为适配副本合并", () => {
 
 test("同名自定义副本与全局母版聚合为一行", () => {
   const merged = mergeProjectSkillsIntoGlobal([
-    createSkill("C:/Users/test/.agents/skills/xiaotangkimicut", "global", ["通用 Skill 目录"]),
-    createSkill("C:/Users/test/.kimi-code/skills/xiaotangkimicut", "custom", []),
+    createSkill("C:/Users/test/.agents/skills/xiaotangkimicut", "global", ["通用 Skill 目录"], [], null, "same"),
+    createSkill("C:/Users/test/.kimi-code/skills/xiaotangkimicut", "custom", [], [], null, "same"),
   ])
 
   assert.equal(merged.length, 1)
   assert.equal(merged[0].scope, "global")
+})
+
+test("同名但内容不同的自定义 Skill 不与全局母版误合并", () => {
+  const merged = mergeProjectSkillsIntoGlobal([
+    createSkill("C:/Users/test/.agents/skills/demo", "global", ["通用 Skill 目录"], [], null, "global-content"),
+    createSkill("D:/sources/demo", "custom", [], [], null, "custom-content"),
+  ])
+
+  assert.equal(merged.length, 2)
 })

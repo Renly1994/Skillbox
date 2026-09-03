@@ -12,6 +12,11 @@ import { marked } from "marked"
 import { NavLink } from "react-router-dom"
 import { electronAPI } from "../lib/electron-api"
 import { normalizeInstalledSkills } from "../lib/installed-skill-normalize"
+import {
+  getAdaptedAgentNames,
+  getAgentFilterNames,
+  getSkillListAgentNames,
+} from "../lib/skill-agent-bindings"
 import { useLocalization } from "../lib/localization"
 import { SkillEditor, type SkillEditorHandle } from "../components/skill-editor"
 import { AgentLogo, AgentLogoRow } from "../components/agent-logo"
@@ -213,6 +218,18 @@ interface DragSkillPayload {
 interface DragToast {
   type: "success" | "error"
   message: string
+}
+
+function createSkillRemovalRequest(skill: InstalledSkill): SkillRemovalRequest {
+  return {
+    name: skill.name,
+    targets: skill.locations.map((location) => ({
+      path: location.path,
+      canonicalPath: location.canonicalPath,
+      scope: location.scope,
+      projectName: location.projectName,
+    })),
+  }
 }
 
 type SkillScopeFilter = "all" | "global" | "project" | "custom"
@@ -571,7 +588,7 @@ const SkillListRow = memo(function SkillListRow({
           <StarIcon size={13} filled={isFavorited} />
         </span>
         <span className="skillbox-row-agents">
-          <AgentLogoRow agents={skill.agents} size={17} />
+          <AgentLogoRow agents={getSkillListAgentNames(skill)} size={17} />
         </span>
         <span className="skillbox-category-badge">
           <span className="cat-icon" style={{ color: category.color }}>
@@ -764,7 +781,7 @@ function MiddlePanel({
   const skillAgentKeys = useMemo(() => {
     const counts = new Map<string, number>()
     for (const skill of skills) {
-      const keys = new Set(skill.agents.map((name) => DISPLAY_NAME_TO_KEY[name] ?? name))
+      const keys = new Set(getAgentFilterNames(skill).map((name) => DISPLAY_NAME_TO_KEY[name] ?? name))
       keys.delete("universal")
       for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1)
     }
@@ -1039,9 +1056,11 @@ function MiddlePanel({
               </button>
               {showAgentDropdown && (
                 <div className="skillbox-bulk-menu skillbox-bulk-agent-menu">
-                  {agents.filter((agent) => agent.name !== "universal").map((agent) => {
+                  {agents.filter((agent) =>
+                    agent.name !== "universal" && !agent.isSharedSkillDirectory
+                  ).map((agent) => {
                     const adaptedCount = selectedSkills.filter((skill) =>
-                      skill.agents.includes(agent.displayName),
+                      getAdaptedAgentNames(skill).includes(agent.displayName),
                     ).length
                     const allAdapted = adaptedCount === selectedSkills.length
                     return (
@@ -1137,57 +1156,93 @@ const MemoizedMiddlePanel = memo(MiddlePanel)
 function BulkDeleteDialog({
   count,
   selectedAgent,
+  selectedAgentCanBeUnbound,
   onConfirm,
   onRemoveFromAgent,
   onCancel,
 }: {
   count: number
   selectedAgent: string | null
-  onConfirm: () => void
-  onRemoveFromAgent: () => void
+  selectedAgentCanBeUnbound: boolean
+  onConfirm: () => Promise<void>
+  onRemoveFromAgent: () => Promise<void>
   onCancel: () => void
 }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const canRemoveFromSelectedAgent = Boolean(
+    selectedAgent && selectedAgentCanBeUnbound,
+  )
+
+  const run = async (action: () => Promise<void>) => {
+    if (busy) return
+    setError(null)
+    setBusy(true)
+    try {
+      await action()
+    } catch (runError) {
+      setError(runError instanceof Error ? runError.message : "操作失败，请重试。")
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-surface border border-border rounded-xl shadow-lg w-full max-w-sm mx-4 p-5 animate-slide-down">
-        <h2 className="text-[14px] font-semibold text-foreground mb-1">
-          {selectedAgent
-            ? `Remove ${count} skill${count !== 1 ? "s" : ""} from ${selectedAgent}?`
-            : `Delete ${count} skill${count !== 1 ? "s" : ""}?`}
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="bulk-delete-title"
+        aria-describedby="bulk-delete-description"
+        className="bg-surface border border-border rounded-xl shadow-lg w-full max-w-sm mx-4 p-5 animate-slide-down"
+      >
+        <h2 id="bulk-delete-title" className="text-[14px] font-semibold text-foreground mb-1">
+          {canRemoveFromSelectedAgent
+            ? `如何处理选中的 ${count} 个 Skill？`
+            : `删除选中的 ${count} 个 Skill？`}
         </h2>
-        <p className="text-[12px] text-muted mb-5">
-          {selectedAgent
-            ? `This will remove ${count === 1 ? "this skill" : `${count} selected skills`} from ${selectedAgent} only. The skill files will remain on disk.`
-            : `This will remove ${count === 1 ? "this skill" : `all ${count} selected skills`} from every agent where ${count === 1 ? "it is" : "they are"} installed. This action cannot be undone.`}
+        <p id="bulk-delete-description" className="text-[12px] leading-5 text-muted mb-5">
+          {canRemoveFromSelectedAgent
+            ? `只取消 ${selectedAgent} 适配不会删除 Skill 文件。选择删除时，这些 Skill 会从 Skillbox 中移除，文件会进入系统回收站。`
+            : "删除后，这些 Skill 会从 Skillbox 中移除，文件会进入系统回收站。"}
         </p>
+        {error && (
+          <p role="alert" className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-600">
+            {error}
+          </p>
+        )}
         <div className="flex items-center gap-2 justify-end">
           <button
             onClick={onCancel}
-            className="text-muted text-[12px] px-4 py-1.5 hover:text-foreground transition-colors"
+            disabled={busy}
+            className="min-h-11 whitespace-nowrap rounded-lg px-4 text-[12px] text-muted outline-2 outline-offset-2 transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-accent active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Cancel
+            取消
           </button>
-          {selectedAgent ? (
+          {canRemoveFromSelectedAgent ? (
             <>
               <button
-                onClick={onRemoveFromAgent}
-                className="bg-red-600 text-white text-[12px] px-4 py-1.5 rounded-lg hover:bg-red-700 transition-colors"
+                onClick={() => void run(onRemoveFromAgent)}
+                disabled={busy}
+                className="min-h-11 whitespace-nowrap rounded-lg border border-border px-4 text-[12px] text-foreground outline-2 outline-offset-2 transition-colors hover:bg-surface-hover focus-visible:outline-accent active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Remove from {selectedAgent}
+                {busy ? "处理中…" : `只取消 ${selectedAgent} 适配`}
               </button>
               <button
-                onClick={onConfirm}
-                className="text-red-400 text-[12px] px-4 py-1.5 hover:text-red-300 transition-colors"
+                onClick={() => void run(onConfirm)}
+                disabled={busy}
+                className="min-h-11 whitespace-nowrap rounded-lg bg-red-600 px-4 text-[12px] font-medium text-white outline-2 outline-offset-2 transition-colors hover:bg-red-700 focus-visible:outline-accent active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Remove from all
+                {busy ? "正在删除…" : "删除所选 Skill"}
               </button>
             </>
           ) : (
             <button
-              onClick={onConfirm}
-              className="bg-red-600 text-white text-[12px] px-4 py-1.5 rounded-lg hover:bg-red-700 transition-colors"
+              onClick={() => void run(onConfirm)}
+              disabled={busy}
+              className="min-h-11 whitespace-nowrap rounded-lg bg-red-600 px-4 text-[12px] font-medium text-white outline-2 outline-offset-2 transition-colors hover:bg-red-700 focus-visible:outline-accent active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Delete {count} skill{count !== 1 ? "s" : ""}
+              {busy ? "正在删除…" : `删除 ${count} 个 Skill`}
             </button>
           )}
         </div>
@@ -1419,68 +1474,116 @@ function FolderIcon({ size = 14 }: { size?: number }) {
 interface RemoveSkillDialogProps {
   skill: InstalledSkill
   onClose: () => void
-  onRemoveFromAgents: (agentDisplayNames: string[]) => void
-  onRemoveAll: () => void
+  onRemoveAll: () => Promise<void>
 }
 
-function RemoveSkillDialog({ skill, onClose, onRemoveFromAgents, onRemoveAll }: RemoveSkillDialogProps) {
-  const [checked, setChecked] = useState<Record<string, boolean>>({})
+function RemoveSkillDialog({ skill, onClose, onRemoveAll }: RemoveSkillDialogProps) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const cancelButtonRef = useRef<HTMLButtonElement>(null)
 
-  const toggleAgent = (displayName: string) => {
-    setChecked((prev) => ({ ...prev, [displayName]: !prev[displayName] }))
+  const scopeLabels = useMemo(() => {
+    const labels: string[] = []
+    if (skill.locations.some((location) => location.scope === "global")) {
+      labels.push("全局 Skill")
+    }
+    const projectNames = Array.from(new Set(
+      skill.locations
+        .filter((location) => location.scope === "project")
+        .map((location) => location.projectName)
+        .filter((name): name is string => Boolean(name)),
+    ))
+    if (skill.locations.some((location) => location.scope === "project")) {
+      labels.push(
+        projectNames.length === 1
+          ? `项目 Skill · ${projectNames[0]}`
+          : projectNames.length > 1
+            ? `项目 Skill · ${projectNames.length} 个项目`
+            : "项目 Skill",
+      )
+    }
+    if (skill.locations.some((location) => location.scope === "custom")) {
+      labels.push("自定义 Skill")
+    }
+    return labels
+  }, [skill.locations])
+
+  useEffect(() => {
+    cancelButtonRef.current?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busy) onClose()
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [busy, onClose])
+
+  const handleDelete = async () => {
+    if (busy) return
+    setError(null)
+    setBusy(true)
+    try {
+      await onRemoveAll()
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "删除失败，请重试。")
+    } finally {
+      setBusy(false)
+    }
   }
-
-  const selectedAgents = skill.agents.filter((a) => checked[a])
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-surface border border-border rounded-xl shadow-lg w-full max-w-sm mx-4 p-5 animate-slide-down">
-        <h2 className="text-[14px] font-semibold text-foreground mb-1">
-          Remove "{skill.name}"
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="remove-skill-title"
+        aria-describedby="remove-skill-description"
+        className="bg-surface border border-border rounded-xl shadow-lg w-full max-w-sm mx-4 p-5 animate-slide-down"
+      >
+        <h2 id="remove-skill-title" className="text-[14px] font-semibold text-foreground mb-1">
+          删除“{skill.name}”？
         </h2>
-        <p className="text-[12px] text-muted mb-4">
-          This skill is installed in {skill.agents.length} agent{skill.agents.length !== 1 ? "s" : ""}:
+        <p id="remove-skill-description" className="text-[12px] leading-5 text-muted mb-4">
+          删除后，这个 Skill 会从 Skillbox 中移除，文件会进入系统回收站。
         </p>
 
-        <div className="flex flex-col gap-2 mb-5">
-          {skill.agents.map((agent) => (
-            <label
-              key={agent}
-              className="flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-surface-hover transition-colors cursor-pointer"
-            >
-              <input
-                type="checkbox"
-                checked={!!checked[agent]}
-                onChange={() => toggleAgent(agent)}
-                className="rounded border-border accent-foreground"
-              />
-              <AgentLogo name={agent} size={14} />
-              <span className="text-[12px] text-foreground">{agent}</span>
-            </label>
-          ))}
+        <div className="mb-4 rounded-lg border border-border bg-background px-3 py-2.5">
+          <p className="mb-2 text-[11px] text-muted">删除范围</p>
+          <div className="flex flex-wrap gap-1.5">
+            {scopeLabels.map((label) => (
+              <span key={label} className="rounded-md border border-border bg-surface px-2 py-1 text-[11px] text-foreground">
+                {label}
+              </span>
+            ))}
+          </div>
         </div>
+
+        {skill.agents.length > 0 && (
+          <p className="mb-4 rounded-lg bg-surface-hover px-3 py-2 text-[12px] leading-5 text-muted">
+            只想让某个 Agent 停止使用？请先取消删除，再关闭详情页中对应的 Agent 开关。
+          </p>
+        )}
+
+        {error && (
+          <p role="alert" className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-600">
+            {error}
+          </p>
+        )}
 
         <div className="flex items-center gap-2 justify-end">
           <button
+            ref={cancelButtonRef}
             onClick={onClose}
-            className="text-muted text-[12px] px-4 py-1.5 hover:text-foreground transition-colors"
+            disabled={busy}
+            className="min-h-11 whitespace-nowrap rounded-lg px-4 text-[12px] text-muted outline-2 outline-offset-2 transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-accent active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Cancel
+            取消
           </button>
           <button
-            onClick={() => {
-              if (selectedAgents.length > 0) onRemoveFromAgents(selectedAgents)
-            }}
-            disabled={selectedAgents.length === 0}
-            className="text-[12px] px-4 py-1.5 rounded-lg border border-border text-foreground hover:bg-surface-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            onClick={() => void handleDelete()}
+            disabled={busy}
+            className="min-h-11 whitespace-nowrap rounded-lg bg-red-600 px-4 text-[12px] font-medium text-white outline-2 outline-offset-2 transition-colors hover:bg-red-700 focus-visible:outline-accent active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Remove selected
-          </button>
-          <button
-            onClick={onRemoveAll}
-            className="bg-red-600 text-white text-[12px] px-4 py-1.5 rounded-lg hover:bg-red-700 transition-colors"
-          >
-            Remove all
+            {busy ? "正在删除…" : "移到回收站"}
           </button>
         </div>
       </div>
@@ -1499,7 +1602,7 @@ interface RightPanelProps {
   supportingFiles: InstalledSkill["supportingFiles"]
   collections: Record<string, string[]>
   onContentSaved: (newContent: string) => void
-  onSkillRemoved: () => void
+  onSkillRemoved: (result: SkillRemovalResult) => void
   onSkillChanged: () => Promise<void>
   onClose: () => void
   availableAgents: DetectedAgent[]
@@ -1527,7 +1630,9 @@ function RightPanel({
   const [selectedSupportingFile, setSelectedSupportingFile] = useState<string | null>(null)
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
   const [showRemoveDialog, setShowRemoveDialog] = useState(false)
-  const [boundAgents, setBoundAgents] = useState<string[]>(skill?.agents ?? [])
+  const [boundAgents, setBoundAgents] = useState<string[]>(
+    skill ? getAdaptedAgentNames(skill) : [],
+  )
   const [bindingBusy, setBindingBusy] = useState<Set<string>>(new Set())
   const [versionSyncPath, setVersionSyncPath] = useState<string | null>(null)
   const [bindingError, setBindingError] = useState<string | null>(null)
@@ -1535,9 +1640,11 @@ function RightPanel({
   const editorRef = useRef<SkillEditorHandle | null>(null)
   const panelRef = useRef<HTMLDivElement | null>(null)
   const detailScrollRef = useRef<HTMLDivElement | null>(null)
-  const skillAgentsKey = skill?.agents.join("\0") ?? ""
+  const skillAgentsKey = skill ? getAdaptedAgentNames(skill).join("\0") : ""
   const adaptableAgents = useMemo(
-    () => availableAgents.filter((agent) => agent.name !== "universal"),
+    () => availableAgents.filter((agent) =>
+      agent.name !== "universal" && !agent.isSharedSkillDirectory,
+    ),
     [availableAgents],
   )
   const adaptableAgentNames = useMemo(
@@ -1559,7 +1666,7 @@ function RightPanel({
   }, [skill?.canonicalPath])
 
   useEffect(() => {
-    setBoundAgents(skill?.agents ?? [])
+    setBoundAgents(skill ? getAdaptedAgentNames(skill) : [])
   }, [skill?.canonicalPath, skillAgentsKey])
 
   useEffect(() => {
@@ -1665,31 +1772,22 @@ function RightPanel({
 
   const handleDeleteClick = () => {
     if (!skill) return
-    if (adaptableBoundAgents.length > 1) {
-      setShowRemoveDialog(true)
-    } else {
-      // Single agent: just confirm and remove all
-      if (confirm(translate(`Remove "${skill.name}" from ${adaptableBoundAgents[0] || "local library"}?`))) {
-        electronAPI.removeSkill(skill.name).then(() => onSkillRemoved())
-      }
-    }
-  }
-
-  const handleRemoveFromAgents = async (agentDisplayNames: string[]) => {
-    if (!skill) return
-    for (const displayName of agentDisplayNames) {
-      const registryKey = DISPLAY_NAME_TO_KEY[displayName] || displayName.toLowerCase().replace(/\s+/g, "-")
-      await electronAPI.removeFromAgent(skill.name, registryKey)
-    }
-    setShowRemoveDialog(false)
-    onSkillRemoved()
+    setShowRemoveDialog(true)
   }
 
   const handleRemoveAll = async () => {
     if (!skill) return
-    await electronAPI.removeSkill(skill.name)
-    setShowRemoveDialog(false)
-    onSkillRemoved()
+    try {
+      const result = await electronAPI.removeSkill(createSkillRemovalRequest(skill))
+      setShowRemoveDialog(false)
+      onSkillRemoved(result)
+      if (result.errors.length > 0) {
+        window.alert(`部分删除失败：\n${result.errors.map((error) => `${error.path}: ${error.message}`).join("\n")}`)
+      }
+    } catch (error) {
+      setBindingError(error instanceof Error ? error.message : String(error))
+      throw error
+    }
   }
 
   const handleAgentToggle = async (agent: DetectedAgent) => {
@@ -1703,7 +1801,7 @@ function RightPanel({
     let applied = false
     try {
       if (installed) {
-        await electronAPI.removeFromAgent(skill.name, agent.name)
+        await electronAPI.removeFromAgent(createSkillRemovalRequest(skill), agent.name)
       } else {
         await electronAPI.addToAgent(skill.name, skill.path, agent.name)
       }
@@ -2098,7 +2196,6 @@ function RightPanel({
         <RemoveSkillDialog
           skill={{ ...skill, agents: adaptableBoundAgents }}
           onClose={() => setShowRemoveDialog(false)}
-          onRemoveFromAgents={handleRemoveFromAgents}
           onRemoveAll={handleRemoveAll}
         />
       )}
@@ -2131,7 +2228,11 @@ function CreateSkillDialog({
       setName("")
       setDescription("")
       setContent("")
-      setTargets(defaultTargets.length > 0 ? defaultTargets : agents.map((agent) => agent.name))
+      const availableTargetNames = new Set(agents.map((agent) => agent.name))
+      setTargets(
+        (defaultTargets.length > 0 ? defaultTargets : agents.map((agent) => agent.name))
+          .filter((agentName) => availableTargetNames.has(agentName)),
+      )
     }
   }, [open, defaultTargets, agents])
 
@@ -2345,7 +2446,10 @@ export function Home() {
     const coverage: Record<string, string[]> = {}
     for (const skill of skills) {
       const key = skill.name.trim().toLowerCase()
-      coverage[key] = Array.from(new Set([...(coverage[key] || []), ...skill.agents]))
+      coverage[key] = Array.from(new Set([
+        ...(coverage[key] || []),
+        ...getAgentFilterNames(skill),
+      ]))
     }
     return coverage
   }, [skills])
@@ -2520,7 +2624,7 @@ export function Home() {
     }
 
     if (selectedAgent) {
-      result = result.filter((skill) => skill.agents.includes(selectedAgent))
+      result = result.filter((skill) => getAgentFilterNames(skill).includes(selectedAgent))
     }
 
     if (deferredSearchQuery.trim()) {
@@ -2755,16 +2859,12 @@ export function Home() {
     }
   }, [selectedSkill])
 
-  const handleSkillRemoved = useCallback(async () => {
+  const handleSkillRemoved = useCallback((result: SkillRemovalResult) => {
     setSelectedSkillPath(null)
     setSkillContent(null)
     setSelectedSupportingFiles([])
-    try {
-      const installedSkills = await electronAPI.listInstalled()
-      setSkills(installedSkills)
-    } catch (err) {
-      console.error("Failed to refresh skills after removal:", err)
-    }
+    setSkills(result.skills)
+    setCollections(result.collections)
   }, [])
 
   const handleSkillChanged = useCallback(async () => {
@@ -2843,6 +2943,16 @@ export function Home() {
 
   const handleDropOnAgent = useCallback(async (agentDisplayName: string) => {
     if (!dragSkill) return
+    const agent = agents.find((candidate) => candidate.displayName === agentDisplayName)
+    if (agent?.isSharedSkillDirectory) {
+      setDragToast({
+        type: "success",
+        message: `${agent.displayName} 直接使用通用 Skill 目录，无需重复适配`,
+      })
+      setDragSkill(null)
+      setDragOverTarget(null)
+      return
+    }
     const registryKey =
       DISPLAY_NAME_TO_KEY[agentDisplayName] ||
       agentDisplayName.toLowerCase().replace(/\s+/g, "-")
@@ -2864,7 +2974,7 @@ export function Home() {
       setDragSkill(null)
       setDragOverTarget(null)
     }
-  }, [dragSkill])
+  }, [agents, dragSkill])
 
   useEffect(() => {
     if (!dragToast) return
@@ -3023,7 +3133,7 @@ export function Home() {
   const handleBulkAdaptToAgent = useCallback(async (agent: DetectedAgent) => {
     const selectedSkills = skills.filter((skill) => multiSelected.has(skill.canonicalPath))
     const toAdapt = selectedSkills.filter((skill) =>
-      !skill.agents.includes(agent.displayName),
+      !getAdaptedAgentNames(skill).includes(agent.displayName),
     )
     if (toAdapt.length === 0) return
 
@@ -3083,15 +3193,17 @@ export function Home() {
 
   const handleBulkDeleteConfirm = useCallback(async () => {
     const pathsToDelete = new Set(multiSelected)
-    const skillNames = skills
+    const skillsToDelete = skills
       .filter((s) => pathsToDelete.has(s.canonicalPath))
-      .map((s) => s.name)
 
-    for (const name of skillNames) {
+    const failures: string[] = []
+    for (const skill of skillsToDelete) {
       try {
-        await electronAPI.removeSkill(name)
+        const result = await electronAPI.removeSkill(createSkillRemovalRequest(skill))
+        failures.push(...result.errors.map((error) => `${skill.name}: ${error.message}`))
       } catch (err) {
-        console.error(`Failed to remove skill "${name}":`, err)
+        console.error(`Failed to remove skill "${skill.name}":`, err)
+        failures.push(`${skill.name}: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
 
@@ -3107,8 +3219,12 @@ export function Home() {
     setLastMultiSelectIndex(null)
 
     try {
-      const installedSkills = await electronAPI.listInstalled()
+      const installedSkills = await electronAPI.rescanSkills()
       setSkills(installedSkills)
+      setCollections(await electronAPI.settingsGet("collections.skills", {} as Record<string, string[]>))
+      if (failures.length > 0) {
+        setDragToast({ type: "error", message: `部分删除失败：${failures.join("；")}` })
+      }
     } catch (err) {
       console.error("Failed to refresh skills after bulk removal:", err)
     }
@@ -3116,19 +3232,29 @@ export function Home() {
 
   const handleBulkRemoveFromAgent = useCallback(async () => {
     if (!selectedAgent) return
+    const selectedAgentEntry = agents.find((agent) => agent.displayName === selectedAgent)
+    if (selectedAgentEntry?.isSharedSkillDirectory) {
+      setShowBulkDeleteDialog(false)
+      setDragToast({
+        type: "success",
+        message: `${selectedAgent} 直接使用通用 Skill 目录，不存在可取消的独立适配`,
+      })
+      return
+    }
     const registryKey =
       DISPLAY_NAME_TO_KEY[selectedAgent] ||
       selectedAgent.toLowerCase().replace(/\s+/g, "-")
     const pathsToRemove = new Set(multiSelected)
-    const skillNames = skills
+    const skillsToRemove = skills
       .filter((s) => pathsToRemove.has(s.canonicalPath))
-      .map((s) => s.name)
 
-    for (const name of skillNames) {
+    const failures: string[] = []
+    for (const skill of skillsToRemove) {
       try {
-        await electronAPI.removeFromAgent(name, registryKey)
+        await electronAPI.removeFromAgent(createSkillRemovalRequest(skill), registryKey)
       } catch (err) {
-        console.error(`Failed to remove skill "${name}" from ${selectedAgent}:`, err)
+        console.error(`Failed to remove skill "${skill.name}" from ${selectedAgent}:`, err)
+        failures.push(`${skill.name}: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
 
@@ -3143,12 +3269,15 @@ export function Home() {
     setLastMultiSelectIndex(null)
 
     try {
-      const installedSkills = await electronAPI.listInstalled()
+      const installedSkills = await electronAPI.rescanSkills()
       setSkills(installedSkills)
+      if (failures.length > 0) {
+        setDragToast({ type: "error", message: `部分取消适配失败：${failures.join("；")}` })
+      }
     } catch (err) {
       console.error("Failed to refresh skills after bulk removal:", err)
     }
-  }, [multiSelected, selectedAgent, selectedSkill, skills])
+  }, [agents, multiSelected, selectedAgent, selectedSkill, skills])
 
   // Keyboard shortcuts: Escape to clear selection, Cmd/Ctrl+A to select all
   useEffect(() => {
@@ -3304,7 +3433,7 @@ export function Home() {
       <CreateSkillDialog
         open={showCreateDialog}
         onClose={() => setShowCreateDialog(false)}
-        agents={agents}
+        agents={agents.filter((agent) => !agent.isSharedSkillDirectory)}
         defaultTargets={defaultAgents}
         onCreate={handleCreateSkill}
       />
@@ -3330,6 +3459,11 @@ export function Home() {
         <BulkDeleteDialog
           count={multiSelected.size}
           selectedAgent={selectedAgent}
+          selectedAgentCanBeUnbound={Boolean(
+            selectedAgent && skills
+              .filter((skill) => multiSelected.has(skill.canonicalPath))
+              .some((skill) => getAdaptedAgentNames(skill).includes(selectedAgent)),
+          )}
           onConfirm={handleBulkDeleteConfirm}
           onRemoveFromAgent={handleBulkRemoveFromAgent}
           onCancel={() => setShowBulkDeleteDialog(false)}
