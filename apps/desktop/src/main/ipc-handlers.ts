@@ -42,6 +42,7 @@ import {
   findCustomSkillLocations,
 } from "./custom-skill-scanner"
 import { findSkillDirectories } from "./skill-directory-scanner"
+import { createSkillSourceResolver } from "./skill-source-records"
 import { mergeProjectSkillsIntoGlobal } from "./skill-display-merge"
 import {
   prepareAgentSkillTarget,
@@ -1051,7 +1052,7 @@ async function resolveAgentSkillBinding(
 }
 
 /** Strip the internal folderName field before sending to the renderer. */
-async function toRendererSkills(skills: InternalSkill[]): Promise<RendererSkill[]> {
+async function toRendererSkills(skills: InternalSkill[], identifySources = false): Promise<RendererSkill[]> {
   const globalLocationsByName = skills.some((skill) => skill.scope === "global")
     ? await collectGlobalSkillLocations()
     : new Map<string, RendererSkillLocation[]>()
@@ -1091,15 +1092,29 @@ async function toRendererSkills(skills: InternalSkill[]): Promise<RendererSkill[
     }
   }))
 
-  return mergeProjectSkillsIntoGlobal(prepared).map(
-    ({ folderName: _, contentFingerprint: __, ...rest }) => rest,
-  ) as RendererSkill[]
+  const resolveSource = identifySources ? createSkillSourceResolver() : null
+  const rawByPath = new Map(skills.map((skill) => [skill.canonicalPath, skill]))
+  return Promise.all(mergeProjectSkillsIntoGlobal(prepared).map(
+    async ({ folderName: _, contentFingerprint: __, ...rest }) => {
+      if (!resolveSource || rest.source || rest.sourceType) return rest
+      for (const location of rest.locations) {
+        const source = await resolveSource({ name: rest.name, ...location })
+        if (source) {
+          // 扫描时回填原始缓存行；普通列表读取不解析来源文件。
+          const raw = rawByPath.get(rest.canonicalPath)
+          if (raw) Object.assign(raw, source)
+          return { ...rest, ...source }
+        }
+      }
+      return rest
+    },
+  )) as Promise<RendererSkill[]>
 }
 
 /** Backward-compatible wrapper -- returns the renderer-safe shape. */
 async function listInstalledSkills() {
   const raw = await listInstalledSkillsInternal()
-  return toRendererSkills(raw)
+  return toRendererSkills(raw, true)
 }
 
 function createSkillsFingerprint(skills: InternalSkill[]): string {
@@ -1199,8 +1214,8 @@ async function runRescan(
       }
     }
     clearSupportingFilesCache()
+    const rendered = await toRendererSkills(raw, true)
     const fingerprint = persistCachedSkills(raw, preserveCustomScope)
-    const rendered = await toRendererSkills(raw)
     maybeBroadcastSkills(rendered, fingerprint, broadcast)
     return rendered
   })().finally(() => {
@@ -1357,8 +1372,8 @@ async function rescanSingleSkill(changedPath: string): Promise<void> {
   }
 
   clearSupportingFilesCache(resolvedDir ?? undefined)
+  const rendered = await toRendererSkills(cached as InternalSkill[], true)
   const fingerprint = persistCachedSkills(cached as InternalSkill[])
-  const rendered = await toRendererSkills(cached as InternalSkill[])
   maybeBroadcastSkills(rendered, fingerprint, true)
 }
 

@@ -11,6 +11,9 @@ import { List } from "react-window"
 import { marked } from "marked"
 import { NavLink } from "react-router-dom"
 import { electronAPI } from "../lib/electron-api"
+import { categorizeSkill } from "../lib/skill-category"
+import { DEFAULT_LIBRARY_FILTERS, refineLibrarySkills, type LibraryFilters } from "../lib/skill-library-filters"
+import { LibraryFiltersBar, LibraryListActions } from "../components/library-filters"
 import { normalizeInstalledSkills } from "../lib/installed-skill-normalize"
 import {
   getAdaptedAgentNames,
@@ -23,6 +26,49 @@ import { AgentLogo, AgentLogoRow } from "../components/agent-logo"
 import { SidebarUtilities, SkillboxBrand } from "../components/skillbox-brand"
 import { ScanSourcesDialog } from "./scan-sources"
 import skillboxMark from "../assets/skillbox-mark.svg"
+
+function CopySkillName({ name }: { name: string }) {
+  const [status, setStatus] = useState("idle")
+  useEffect(() => {
+    setStatus("idle")
+  }, [name])
+  useEffect(() => {
+    if (status === "idle") return
+    const timer = setTimeout(() => setStatus("idle"), 1600)
+    return () => clearTimeout(timer)
+  }, [status])
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(name)
+      setStatus("copied")
+    } catch {
+      setStatus("error")
+    }
+  }
+  const label = status === "copied" ? "已复制名称" : status === "error" ? "复制失败，请重试" : "复制名称"
+  return (
+    <button
+      type="button"
+      className="skillbox-copy-name"
+      title={label}
+      aria-label={`${label}：${name}`}
+      onClick={(event) => { event.stopPropagation(); void copy() }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault()
+          event.stopPropagation()
+          void copy()
+        }
+      }}
+      onKeyUp={(event) => event.stopPropagation()}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        {status === "copied" ? <path d="m5 12 4 4L19 6" /> : <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V4H4v12h4" /></>}
+      </svg>
+      <span className="sr-only" role="status">{status === "idle" ? "" : label}</span>
+    </button>
+  )
+}
 
 // Map display names to registry keys
 const DISPLAY_NAME_TO_KEY: Record<string, string> = {
@@ -70,43 +116,6 @@ const DISPLAY_NAME_TO_KEY: Record<string, string> = {
   CatPaw: "catpaw",
   "Universal (.agents/skills)": "universal",
   "通用 Skill 目录": "universal",
-}
-
-// Keyword-based category for the list's category capsule. SKILL.md has no
-// standard category field, so we classify from name + description. Rules are
-// ordered: the first match wins, so specific domains come before broad ones.
-// Each category carries an earthy accent color (readable on the warm paper
-// theme in both light and dark mode) and a chunky solid icon (24 viewBox).
-const SKILL_CATEGORY_RULES: Array<{ label: string; color: string; icon: string; pattern: RegExp }> = [
-  { label: "视频", color: "#C2453C", icon: "M8 5v14l11-7z", pattern: /video|字幕|视频|剪辑|ffmpeg|remotion|youtube/i },
-  { label: "音频", color: "#D06E23", icon: "M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z", pattern: /\btts\b|audio|voice|speech|music|transcri|音频|语音/i },
-  { label: "图像", color: "#9E8A1F", icon: "M21 19V5c0-1.1-.9-2-2-2H5C3.9 3 3 3.9 3 5v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z", pattern: /image|img|photo|图片|图像|icon|screenshot/i },
-  { label: "设计", color: "#8A5FA8", icon: "M12 2l7 7-7 13L5 9l7-7z", pattern: /design|frontend|\bui\b|css|theme|视觉|设计/i },
-  { label: "安全", color: "#3E7356", icon: "M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z", pattern: /secur|guard|vuln|audit|安全|审计/i },
-  { label: "文档", color: "#4F6FA8", icon: "M6 2a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6H6z", pattern: /\bpdf\b|xlsx|excel|spreadsheet|\bdoc|slide|ppt|markdown|表格|文档/i },
-  { label: "社媒", color: "#2E8B8B", icon: "M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z", pattern: /social|twitter|reddit|小红书|抖音|社媒|营销/i },
-  { label: "写作", color: "#B04A6E", icon: "M4 20l1.2-4.2L16.5 4.5a2.1 2.1 0 0 1 3 3L8.2 18.8 4 20z", pattern: /writ|humaniz|文案|写作|copy(edit|writ)/i },
-  { label: "开发", color: "#5B5EA6", icon: "M3 4a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h18a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H3zm4.3 4.7L6 12l1.3 3.3 1.4-.6L7.8 12l.9-2.7-1.4-.6zM11 15h6v1.5h-6V15z", pattern: /code|github|\bgit\b|\bapi\b|debug|test|refactor|explain|开发/i },
-  { label: "数据", color: "#6E7F3C", icon: "M4 20V10h3v10H4zm6.5 0V4h3v16h-3zM17 20v-7h3v7h-3z", pattern: /data|\bcsv\b|\bsql\b|analy|数据/i },
-]
-
-const DEFAULT_CATEGORY = {
-  label: "通用",
-  color: "#8A8378",
-  icon: "M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10z",
-}
-
-function categorizeSkill(
-  name: string,
-  description: string,
-): { label: string; color: string; icon: string } {
-  const haystack = `${name}\n${description}`
-  for (const rule of SKILL_CATEGORY_RULES) {
-    if (rule.pattern.test(haystack)) {
-      return { label: rule.label, color: rule.color, icon: rule.icon }
-    }
-  }
-  return DEFAULT_CATEGORY
 }
 
 function StarIcon({
@@ -248,6 +257,9 @@ interface LeftSidebarProps {
   activeFilter: "all" | "favorites"
   onFilterChange: (filter: "all" | "favorites") => void
   collections: Record<string, string[]>
+  uncollectedCount: number
+  uncollected: boolean
+  onToggleUncollected: () => void
   collectionCounts: Record<string, number>
   selectedCollection: string | null
   onSelectCollection: (collection: string | null) => void
@@ -271,6 +283,9 @@ function LeftSidebar({
   activeFilter,
   onFilterChange,
   collections,
+  uncollectedCount,
+  uncollected,
+  onToggleUncollected,
   collectionCounts,
   selectedCollection,
   onSelectCollection,
@@ -295,9 +310,10 @@ function LeftSidebar({
             onClick={() => {
               onFilterChange("all")
               onSelectAgent(null)
+              onSelectCollection(null)
             }}
             className={`skillbox-library-button ${
-              activeFilter === "all" && selectedAgent === null
+              activeFilter === "all" && selectedAgent === null && !selectedCollection && !uncollected
                 ? "is-active"
                 : ""
             }`}
@@ -376,9 +392,12 @@ function LeftSidebar({
           </button>
         </div>
         <nav className="flex flex-col gap-0.5">
-          {Object.keys(collections).length === 0 ? (
-            <p className="text-[12px] text-muted px-1">暂无合集</p>
-          ) : (
+          <button onClick={onToggleUncollected} aria-pressed={uncollected}
+            className={`skillbox-uncollected ${uncollected ? "is-active" : ""}`}>
+            <span><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" /></svg>未归入集合</span>
+            <span className="font-mono">{uncollectedCount}</span>
+          </button>
+          {(
             Object.keys(collections)
               .sort()
               .map((name) => (
@@ -491,7 +510,7 @@ const SkillListRow = memo(function SkillListRow({
 
   return (
     <div style={style} className="px-0.5">
-      <button
+      <div
         onClick={(e) => {
           if (e.metaKey || e.ctrlKey || e.shiftKey) {
             onMultiSelectToggle(skill, e)
@@ -550,9 +569,10 @@ const SkillListRow = memo(function SkillListRow({
               )}
             </span>
           )}
-          <span data-no-localize className="skillbox-skill-name">
+          <button type="button" data-no-localize className="skillbox-skill-name">
             {skill.name}
-          </span>
+          </button>
+          <CopySkillName name={skill.name} />
         </span>
         <span
           title={skill.projectNames.length > 0 ? skill.projectNames.join("、") : undefined}
@@ -605,7 +625,7 @@ const SkillListRow = memo(function SkillListRow({
         >
           {skill.description || "暂无简介"}
         </span>
-      </button>
+      </div>
     </div>
   )
 })
@@ -621,6 +641,8 @@ interface MiddlePanelProps {
   filteredSkills: InstalledSkill[]
   searchQuery: string
   onSearchChange: (q: string) => void
+  libraryFilters: LibraryFilters
+  onLibraryFiltersChange: (filters: LibraryFilters) => void
   selectedSkillPath: string | null
   onSelectSkill: (skill: InstalledSkill) => void
   selectedAgent: string | null
@@ -668,6 +690,8 @@ function MiddlePanel({
   filteredSkills,
   searchQuery,
   onSearchChange,
+  libraryFilters,
+  onLibraryFiltersChange,
   selectedSkillPath,
   onSelectSkill,
   selectedAgent,
@@ -773,7 +797,7 @@ function MiddlePanel({
     return () => document.removeEventListener("mousedown", handleClick)
   }, [showAgentDropdown, showCollectionDropdown])
 
-  const viewTitle = selectedAgent || selectedCollection || (activeFilter === "favorites" ? "Favorites" : "All Skills")
+  const viewTitle = selectedAgent || selectedCollection || (libraryFilters.uncollected ? "未归入集合" : null) || (activeFilter === "favorites" ? "Favorites" : "All Skills")
   // Unique agents that actually carry skills, deduped by registry key. The
   // universal ~/.agents/skills directory is a shared folder, not an agent,
   // so it is excluded. Sorted by skill count so the avatar stack leads
@@ -937,6 +961,14 @@ function MiddlePanel({
         </div>
       </div>
 
+      <LibraryFiltersBar
+        skills={skills}
+        value={libraryFilters}
+        onChange={onLibraryFiltersChange}
+        onReset={onClearFilters}
+        hasOtherFilters={Boolean(searchQuery || selectedAgent || selectedCollection || selectedProject || scopeFilter !== "all" || activeFilter !== "all")}
+      />
+
       {/* Results count and select all toggle */}
       <div className="skillbox-list-meta">
         <span className="text-[11px] uppercase tracking-widest text-muted">
@@ -944,6 +976,13 @@ function MiddlePanel({
             ? "Scanning..."
             : `${filteredSkills.length} skill${filteredSkills.length !== 1 ? "s" : ""}${selectedAgent ? ` in ${selectedAgent}` : ""}${selectedCollection ? ` in ${selectedCollection}` : ""}`}
         </span>
+        <LibraryListActions
+          skills={skills}
+          value={libraryFilters}
+          onChange={onLibraryFiltersChange}
+          onReset={onClearFilters}
+          hasOtherFilters={Boolean(searchQuery || selectedAgent || selectedCollection || selectedProject || scopeFilter !== "all" || activeFilter !== "all")}
+        />
         {!loading && filteredSkills.length > 0 && (
           <div className="flex items-center gap-3">
             {selectionMode && (
@@ -956,11 +995,11 @@ function MiddlePanel({
             )}
             <button
               onClick={onToggleSelectionMode}
-              className={`text-[11px] transition-colors ${
-                selectionMode ? "text-accent hover:text-foreground" : "text-muted hover:text-foreground"
-              }`}
+              className="skillbox-bulk-select"
+              aria-pressed={selectionMode}
             >
-              {selectionMode ? "完成" : "选择"}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3" /><path d="m7 12 3 3 7-7" /></svg>
+              {selectionMode ? "完成选择" : "批量选择"}
             </button>
           </div>
         )}
@@ -1673,6 +1712,7 @@ function RightPanel({
     if (!skill) return
 
     const handleOutsidePointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest(".skillbox-skill-row")) return
       if (event.target instanceof Node && !panelRef.current?.contains(event.target)) {
         onClose()
       }
@@ -1867,9 +1907,10 @@ function RightPanel({
     return (
       <div ref={panelRef} className="skillbox-detail-panel flex flex-col overflow-hidden bg-background">
         <div className="flex items-center justify-between gap-4 border-b border-border px-8 py-5">
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h1 data-no-localize className="truncate text-xl font-bold text-foreground">{skill.name}</h1>
+              <h1 data-no-localize title={skill.name} className="min-w-0 truncate text-xl font-bold text-foreground">{skill.name}</h1>
+              <CopySkillName name={skill.name} />
               <SourceBadge sourceType={skill.sourceType} />
             </div>
             <p className="mt-1 text-[12px] text-muted">
@@ -1921,8 +1962,9 @@ function RightPanel({
           {/* Header */}
           <div className="mb-6">
             <div className="flex items-start justify-between gap-3 mb-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <h1 data-no-localize className="text-xl font-bold text-foreground truncate">{skill.name}</h1>
+              <div className="flex flex-1 items-center gap-2 min-w-0">
+                <h1 data-no-localize title={skill.name} className="min-w-0 text-xl font-bold text-foreground truncate">{skill.name}</h1>
+                <CopySkillName name={skill.name} />
                 <SourceBadge sourceType={skill.sourceType} />
               </div>
 
@@ -2384,6 +2426,7 @@ export function Home() {
   }, [])
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
+  const [libraryFilters, setLibraryFilters] = useState<LibraryFilters>(DEFAULT_LIBRARY_FILTERS)
   const deferredSearchQuery = useDeferredValue(searchQuery)
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
   const [activeFilter, setActiveFilter] = useState<"all" | "favorites">("all")
@@ -2643,8 +2686,9 @@ export function Home() {
       )
     }
 
-    return result
+    return refineLibrarySkills(result, libraryFilters, collections, favorites)
   }, [
+    libraryFilters,
     skills,
     scopeFilter,
     selectedProject,
@@ -2690,7 +2734,7 @@ export function Home() {
 
   const handleSelectSkill = useCallback((skill: InstalledSkill) => {
     setSelectedSkillName(skill.name)
-    setSelectedSkillPath(skill.canonicalPath)
+    setSelectedSkillPath((current) => current === skill.canonicalPath ? null : skill.canonicalPath)
   }, [])
 
   const handleRefresh = useCallback(async () => {
@@ -2837,6 +2881,7 @@ export function Home() {
   )
 
   const handleClearFilters = useCallback(() => {
+    setLibraryFilters((current) => ({ ...DEFAULT_LIBRARY_FILTERS, sort: current.sort }))
     setSearchQuery("")
     setSelectedAgent(null)
     setSelectedCollection(null)
@@ -3077,6 +3122,10 @@ export function Home() {
     setMultiSelected(new Set())
     setLastMultiSelectIndex(null)
   }, [])
+
+  useEffect(() => {
+    setLastMultiSelectIndex(null)
+  }, [filteredSkills])
 
   // Clear multi-selection when the filtered list changes significantly
   useEffect(() => {
@@ -3331,9 +3380,20 @@ export function Home() {
         activeFilter={activeFilter}
         onFilterChange={setActiveFilter}
         collections={collections}
+        uncollectedCount={skills.filter((skill) => !Object.values(collections).some((paths) => paths.includes(skill.canonicalPath))).length}
+        uncollected={libraryFilters.uncollected}
+        onToggleUncollected={() => {
+          setSelectedCollection(null)
+          setSelectedAgent(null)
+          setActiveFilter("all")
+          setLibraryFilters((current) => ({ ...current, uncollected: !current.uncollected }))
+        }}
         collectionCounts={collectionCounts}
         selectedCollection={selectedCollection}
-        onSelectCollection={setSelectedCollection}
+        onSelectCollection={(collection) => {
+          setSelectedCollection(collection)
+          setLibraryFilters((current) => ({ ...current, uncollected: false }))
+        }}
         onCreateCollection={handleCreateCollection}
         onRenameCollection={handleRenameCollection}
         onDeleteCollection={handleDeleteCollection}
@@ -3352,6 +3412,8 @@ export function Home() {
         filteredSkills={filteredSkills}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
+        libraryFilters={libraryFilters}
+        onLibraryFiltersChange={setLibraryFilters}
         selectedSkillPath={selectedSkill?.canonicalPath ?? null}
         onSelectSkill={handleSelectSkill}
         selectedAgent={selectedAgent}
