@@ -134,7 +134,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          app_path="$(find apps/desktop/release -type d -name 'Skillbox.app' -print -quit)"
+          app_path="$(find apps/desktop/release -type d -name 'SkillboxApp.app' -print -quit)"
           test -n "$app_path"
           native_module="$(find "$app_path" -type f -name 'better_sqlite3.node' -print -quit)"
           test -n "$native_module"
