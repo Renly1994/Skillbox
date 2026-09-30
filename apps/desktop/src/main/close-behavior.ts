@@ -95,7 +95,9 @@ function showWindow(win: BrowserWindow): void {
 function ensureTray(win: BrowserWindow, strings: CloseStrings): void {
   if (tray) return
 
-  const iconPath = path.join(__dirname, "../../resources/icon.png")
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, process.platform === "win32" ? "icon.ico" : "icon.png")
+    : path.join(__dirname, "../../resources/icon.png")
   const image = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
 
   tray = new Tray(image)

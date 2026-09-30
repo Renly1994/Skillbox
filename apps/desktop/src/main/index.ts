@@ -10,13 +10,19 @@ import os from "node:os"
 import path from "node:path"
 import {
   hasActiveMarketplaceInstalls,
+  prepareSkillVersionStorage,
   registerIpcHandlers,
   setMainWindow,
+  setSkillWatcherRestart,
 } from "./ipc-handlers"
 import { SkillsFileWatcher } from "./file-watcher"
-import { closeDb } from "./db/index"
+import { McpConfigWatcher } from "./mcp-config-watcher"
+import { closeDb, readEncryptedTranslationKey } from "./db/index"
+import { prepareUserDataPath } from "./user-data-path"
 import { initAutoUpdater } from "./auto-updater"
 import { setupCloseBehavior } from "./close-behavior"
+
+app.setPath("userData", prepareUserDataPath(app.getPath("appData"), os.homedir(), readEncryptedTranslationKey))
 
 // GUI builds on Windows can inherit a closed stdout/stderr pipe. Electron
 // forwards renderer console messages to these streams, and an unhandled EPIPE
@@ -60,10 +66,13 @@ if (!gotSingleInstanceLock) {
 
 let mainWindow: BrowserWindow | null = null
 let fileWatcher: SkillsFileWatcher | null = null
+let mcpConfigWatcher: McpConfigWatcher | null = null
 
 function createWindow(): void {
   // Load app icon
-  const iconPath = path.join(__dirname, "../../resources/icon.png")
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, process.platform === "win32" ? "icon.ico" : "icon.png")
+    : path.join(__dirname, "../../resources/icon.png")
   const icon = nativeImage.createFromPath(iconPath)
 
   // Set dock icon on macOS (needed for dev mode)
@@ -78,7 +87,7 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     title: "Skillbox",
-    icon,
+    icon: process.platform === "win32" && app.isPackaged ? undefined : icon,
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       contextIsolation: true,
@@ -96,12 +105,14 @@ function createWindow(): void {
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
       console.warn("ready-to-show did not fire within 5s — forcing window visible")
       mainWindow.show()
+      if (process.platform === "win32" && app.isPackaged) mainWindow.setIcon(iconPath)
     }
   }, 5000)
 
   mainWindow.on("ready-to-show", () => {
     clearTimeout(showTimeout)
     mainWindow?.show()
+    if (process.platform === "win32" && app.isPackaged) mainWindow?.setIcon(iconPath)
   })
 
   // Open external links in the default browser (only http/https)
@@ -145,11 +156,19 @@ function createWindow(): void {
   fileWatcher.start().catch((err) => {
     console.error("Failed to start file watcher:", err)
   })
+  setSkillWatcherRestart(async () => {
+    fileWatcher?.stop()
+    await fileWatcher?.start()
+  })
+  mcpConfigWatcher = new McpConfigWatcher(mainWindow)
+  mcpConfigWatcher.start()
 
   mainWindow.on("closed", () => {
     clearTimeout(showTimeout)
     fileWatcher?.stop()
     fileWatcher = null
+    mcpConfigWatcher?.stop()
+    mcpConfigWatcher = null
     mainWindow = null
   })
 
@@ -165,13 +184,14 @@ function createWindow(): void {
   initAutoUpdater(mainWindow)
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Second instance was told to quit — don't open a window here.
   if (!gotSingleInstanceLock) return
 
   Menu.setApplicationMenu(null)
 
   try {
+    await prepareSkillVersionStorage()
     registerIpcHandlers()
   } catch (err) {
     // better-sqlite3 can fail to load (arch mismatch, missing prebuild,

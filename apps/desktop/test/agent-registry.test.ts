@@ -4,6 +4,7 @@ import path from "node:path"
 import test from "node:test"
 import {
   agentRegistry,
+  dirExists,
   getAgentGlobalSkillDirectories,
   isGitHubCopilotInstalled,
   PROJECT_PROBES,
@@ -33,6 +34,21 @@ test("使用 Agent 官方全局目录，并保留旧版 Skillbox 目录的扫描
 test("项目级扫描覆盖 Kilo 与 Roo 的原生目录", () => {
   assert.ok(PROJECT_PROBES.some((probe) => probe.subpath === ".kilo/skills" && probe.agentName === "kilo-code"))
   assert.ok(PROJECT_PROBES.some((probe) => probe.subpath === ".roo/skills" && probe.agentName === "roo-code"))
+})
+
+test("豆包工作使用用户技能目录并识别本机安装", async () => {
+  const root = process.platform === "win32"
+    ? path.join(process.env.LOCALAPPDATA || path.join(home, "AppData", "Local"), "DoubaoWork", "User Data")
+    : process.platform === "darwin"
+      ? path.join(home, "Library", "Application Support", "DoubaoWork")
+      : path.join(home, ".super_doubao", "super-doubao-runtime", "workspace")
+  const expected = process.platform === "linux"
+    ? path.join(root, ".user_skills")
+    : path.join(root, "Default", ".doubaowork", "agent_mode", "workspace", ".user_skills")
+
+  assert.equal(agentRegistry["doubao-work"].globalSkillsDir, expected)
+  assert.equal(agentRegistry["doubao-work"].displayName, "豆包工作")
+  assert.equal(await agentRegistry["doubao-work"].detectInstalled(), await dirExists(root))
 })
 
 test("仅存在 Copilot IDE 数据目录时不误判为 GitHub Copilot CLI", async () => {

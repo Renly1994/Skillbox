@@ -1,7 +1,8 @@
-import { app, dialog, ipcMain, net, shell, type BrowserWindow } from "electron"
+import { app, BrowserWindow, dialog, ipcMain, net, safeStorage, shell } from "electron"
 import os from "node:os"
 import path from "node:path"
 import fs from "node:fs/promises"
+import fsSync from "node:fs"
 import { execFile, spawn } from "node:child_process"
 import AdmZip from "adm-zip"
 import matter from "gray-matter"
@@ -10,6 +11,8 @@ import { SettingsStore } from "./db/settings"
 import { RemoteServerStore } from "./db/servers"
 import { RemoteSkillStore } from "./db/skills"
 import { FavoritesStore } from "./db/favorites"
+import { TranslationCacheStore } from "./db/translation-cache"
+import { ActivityStore } from "./db/activity"
 import { loadCachedSkills, saveCachedSkills } from "./db/skills-cache"
 import {
   loadTrendingCache,
@@ -42,9 +45,12 @@ import {
   findCustomSkillLocations,
 } from "./custom-skill-scanner"
 import { findSkillDirectories } from "./skill-directory-scanner"
+import { getScannedSkillScope } from "./skill-scan-scope"
 import { createSkillSourceResolver } from "./skill-source-records"
+import { resolveSkillTimestamps } from "./skill-timestamps"
 import { mergeProjectSkillsIntoGlobal } from "./skill-display-merge"
 import {
+  moveAgentSkillDirectory,
   prepareAgentSkillTarget,
   selectAgentSkillRemovalCandidates,
 } from "./agent-skill-target"
@@ -52,6 +58,8 @@ import {
   assertSafePathSegment,
   isPathInside,
   removeSkillPath,
+  resolveSkillRemovalRoots,
+  selectAgentSkillRemovalTargets,
   validateSkillRemovalRequest,
   type SkillRemovalRequest,
 } from "./skill-removal"
@@ -62,6 +70,7 @@ import {
 import {
   isRequestedMarketplaceContent,
   marketplaceSourceKey,
+  requireLinkedSourceSkill,
   selectMarketplaceSkill,
 } from "./marketplace-install"
 import {
@@ -70,6 +79,42 @@ import {
   type MarketplaceInstallStage,
   type MarketplaceInstallTask,
 } from "./marketplace-install-task"
+import {
+  buildTranslationCacheKey,
+  buildTranslationRequest,
+  buildTranslationSourceHash,
+  getTranslationPreset,
+  normalizeTranslationUsage,
+  parseTranslationResponse,
+  recordTranslationUsage,
+  validateTranslationConfig,
+  validateTranslationContent,
+  type TranslationConfig,
+  type TranslationUsage,
+} from "./translation"
+import {
+  addMcpServer,
+  openMcpConfig,
+  removeMcpServer,
+  scanMcpLibrary,
+  setMcpConnection,
+  syncMcpServer,
+} from "./mcp-config"
+import { mcpAgentRegistry } from "./mcp-registry"
+import { noteSkillboxMcpWrite } from "./mcp-config-watcher"
+import {
+  SkillVersionStore,
+  migrateDefaultSkillVersionStore,
+  migrateSkillVersionStore,
+  prepareSkillVersionPathMigration,
+  type SkillVersionReason,
+} from "./skill-version-history"
+import { migrateSkillStorage } from "./skill-storage-migration"
+import {
+  remapPathKeyedRecords,
+  remapSkillStoragePathFromRoots,
+  remapSkillStoragePathList,
+} from "./skill-storage-records"
 
 const home = os.homedir()
 
@@ -89,21 +134,41 @@ async function fileExists(p: string): Promise<boolean> {
 const LOCK_FILE_VERSION = 1
 const LOCK_FILE_PATH = path.join(home, ".agents", ".skill-lock.json")
 const CANONICAL_SKILLS_DIR = path.join(home, ".agents", "skills")
+const SKILL_STORAGE_PATH_KEY = "skills.storagePath"
 const DETACHED_AGENT_COPIES_DIR = path.join(home, ".agents", "skillbox-detached")
 const SKILLBOX_BACKUPS_DIR = path.join(home, ".agents", "skillbox-backups")
+const SKILL_VERSION_STORAGE_KEY = "versions.storagePath"
+const SKILL_VERSION_RETENTION_KEY = "versions.maxPerSkill"
+const DEFAULT_SKILL_VERSION_RETENTION = 20
 
 interface SkillLockEntry {
   source: string
   sourceType: string
-  originalUrl: string
-  skillFolderHash: string
-  installedAt: string
-  updatedAt: string
+  originalUrl?: string
+  sourceLinked?: boolean
+  skillId?: string
+  skillFolderHash?: string
+  installedAt?: string
+  updatedAt?: string
 }
 
 interface SkillLockFile {
   version: number
   skills: Record<string, SkillLockEntry>
+  linkedSources?: Record<string, SkillLockEntry>
+}
+
+function getSkillSourceRecord(lock: SkillLockFile, skillPath: string): SkillLockEntry | undefined {
+  const resolvedPath = path.resolve(skillPath)
+  const linked = lock.linkedSources?.[pathComparisonKey(resolvedPath)]
+  if (linked) return linked
+  const managed = getSkillStorageRoots().some((root) => isPathInside(root, resolvedPath)) ||
+    Object.values(agentRegistry).some((agent) =>
+      getAgentGlobalSkillDirectories(agent).some((root) => isPathInside(root, resolvedPath)),
+    )
+  return managed
+    ? lock.skills[path.basename(resolvedPath)]
+    : undefined
 }
 
 async function readSkillLock(): Promise<SkillLockFile> {
@@ -181,6 +246,11 @@ const AGENT_CACHE_TTL_MS = 60_000 // Re-detect at most once per minute
 const supportingFilesCache = new Map<string, SupportingFile[]>()
 const rescanInFlight = new Map<string, Promise<Array<Omit<InternalSkill, "folderName">>>>()
 let cachedSkillsFingerprint: string | null = null
+// Revalidate the skill cache once per process: page mounts call list-installed
+// repeatedly, but runtime changes are already pushed by the file watcher, so
+// the only thing a background rescan needs to cover is edits made while the
+// app was closed.
+let backgroundRescanDone = false
 let lastBroadcastFingerprint: string | null = null
 let pendingRestorePromise: Promise<void> | null = null
 
@@ -206,21 +276,18 @@ async function parseSkillMd(filePath: string): Promise<ParsedSkill | null> {
   }
 }
 
-function getScopeForPath(resolvedPath: string): "global" | "project" | "custom" {
-  const globalRoots = [
-    CANONICAL_SKILLS_DIR,
+function getGlobalSkillRoots(): string[] {
+  return [
+    ...getSkillStorageRoots(),
     ...Object.values(agentRegistry).flatMap(getAgentGlobalSkillDirectories),
-  ].map((root) => path.resolve(root))
+  ]
+}
 
-  if (globalRoots.some((root) => pathsEqual(resolvedPath, root) || isPathInside(root, resolvedPath))) {
-    return "global"
-  }
-
-  if (resolvedPath.split(path.sep).some((segment) => segment.startsWith("."))) {
-    return "project"
-  }
-
-  return "custom"
+function getScopeForPath(skillPath: string): "global" | "project" | "custom" {
+  return getScannedSkillScope(
+    { path: skillPath, canonicalPath: skillPath },
+    getGlobalSkillRoots(),
+  )
 }
 
 function getProjectNameForPath(resolvedPath: string): string | null {
@@ -295,8 +362,9 @@ function isSkillPathAllowed(resolvedPath: string): boolean {
         pathsEqual(resolvedPath, skillsDir) || isPathInside(skillsDir, resolvedPath),
       ),
     ) ||
-    pathsEqual(resolvedPath, CANONICAL_SKILLS_DIR) ||
-    isPathInside(CANONICAL_SKILLS_DIR, resolvedPath)
+    getSkillStorageRoots().some((root) =>
+      pathsEqual(resolvedPath, root) || isPathInside(root, resolvedPath),
+    )
   ) {
     return true
   }
@@ -310,9 +378,24 @@ function isSkillPathAllowed(resolvedPath: string): boolean {
   try {
     ensureStores()
     const customScanPaths = settingsStore?.get<string[]>(CUSTOM_SCAN_PATHS_KEY, []) ?? []
-    return customScanPaths.some((custom) => {
+    const allowedByCustomPath = customScanPaths.some((custom) => {
       const base = path.resolve(custom.replace(/^~(?=$|\/|\\)/, home))
       return pathsEqual(resolvedPath, base) || isPathInside(base, resolvedPath)
+    })
+    if (allowedByCustomPath) return true
+  } catch {
+    // 继续检查扫描缓存。
+  }
+
+  // The scanner follows links (junctions/symlinks) inside allowed roots and
+  // records the resolved target as the canonical path. That target can live
+  // outside every configured root (e.g. a legacy skill-manager/shared store
+  // linked into an agent dir), so also trust canonical paths the app itself
+  // has already discovered and cached.
+  try {
+    return loadCachedSkills().some((skill) => {
+      const canonical = path.resolve(skill.canonicalPath)
+      return pathsEqual(resolvedPath, canonical) || isPathInside(canonical, resolvedPath)
     })
   } catch {
     return false
@@ -360,6 +443,7 @@ async function collectSkillsFromRoot(
     versionMismatches: SkillVersionMismatch[]
     source?: string
     sourceType?: string
+    hasLinkedSource?: boolean
     installedAt?: string
     updatedAt?: string
     folderName: string
@@ -379,6 +463,7 @@ async function collectSkillsFromRoot(
     versionMismatches: SkillVersionMismatch[]
     source?: string
     sourceType?: string
+    hasLinkedSource?: boolean
     installedAt?: string
     updatedAt?: string
     folderName: string
@@ -397,7 +482,8 @@ async function collectSkillsFromRoot(
     const realPath = await fs.realpath(skillDir).catch(() => skillDir)
     const parsed = await parseSkillMd(skillMdPath)
     const folderName = path.basename(skillDir)
-    const lockEntry = lock.skills[folderName]
+    const lockEntry = getSkillSourceRecord(lock, scope === "project" ? skillDir : realPath)
+    const timestamps = await resolveSkillTimestamps(realPath, lockEntry)
     const attributedAgent = agentName ? agentRegistry[agentName] : undefined
 
     results.push({
@@ -416,8 +502,8 @@ async function collectSkillsFromRoot(
       versionMismatches: [],
       source: lockEntry?.source,
       sourceType: lockEntry?.sourceType,
-      installedAt: lockEntry?.installedAt,
-      updatedAt: lockEntry?.updatedAt,
+      hasLinkedSource: lockEntry?.sourceLinked === true || lockEntry?.sourceType === "github",
+      ...timestamps,
       folderName,
     })
   }
@@ -576,7 +662,7 @@ async function moveAgentCopyToBackup(
     backupRoot,
     `${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID().slice(0, 8)}`,
   )
-  await fs.rename(agentPath, backupPath)
+  await moveAgentSkillDirectory(agentPath, backupPath)
   return backupPath
 }
 
@@ -598,7 +684,7 @@ async function detachAgentCopy(
     await moveAgentCopyToBackup(folderName, agentName, detachedPath)
   }
   await fs.mkdir(path.dirname(detachedPath), { recursive: true })
-  await fs.rename(agentPath, detachedPath)
+  await moveAgentSkillDirectory(agentPath, detachedPath)
   return detachedPath
 }
 
@@ -617,7 +703,7 @@ async function restoreDetachedAgentCopy(
     throw new Error("Agent 目录中已存在同名 Skill，无法恢复暂存副本")
   }
   await fs.mkdir(agent.globalSkillsDir, { recursive: true })
-  await fs.rename(detachedPath, agentPath)
+  await moveAgentSkillDirectory(detachedPath, agentPath)
   return true
 }
 
@@ -721,6 +807,7 @@ async function listInstalledSkillsInternal(
     versionMismatches: SkillVersionMismatch[]
     source?: string
     sourceType?: string
+    hasLinkedSource?: boolean
     installedAt?: string
     updatedAt?: string
     folderName: string
@@ -743,6 +830,7 @@ async function listInstalledSkillsInternal(
       versionMismatches: SkillVersionMismatch[]
       source?: string
       sourceType?: string
+      hasLinkedSource?: boolean
       installedAt?: string
       updatedAt?: string
       folderName: string
@@ -760,13 +848,14 @@ async function listInstalledSkillsInternal(
         const skillDir = discovered.path
         const folderName = path.basename(skillDir)
         const parsed = await parseSkillMd(path.join(skillDir, "SKILL.md"))
-        const scope = getScopeForPath(skillDir)
+        const scope = getScannedSkillScope(discovered, getGlobalSkillRoots())
         const projectName =
           scope === "project" ? getProjectNameForPath(skillDir) : null
 
         const skillName = parsed?.name || folderName
         const skillKey = globalSkillKey(skillName)
         const existing = skillMap.get(skillKey)
+        const lockEntry = getSkillSourceRecord(lock, discovered.canonicalPath)
         const bindings = bindingsBySkillKey.get(skillKey) ?? []
         if (!bindings.some((binding) => binding.agentName === agent.name)) {
           bindings.push({
@@ -786,16 +875,18 @@ async function listInstalledSkillsInternal(
             existing.agentShortCodes.push(agent.shortCode)
           }
           if (agent.name === "universal") {
+            const timestamps = await resolveSkillTimestamps(discovered.canonicalPath, lockEntry)
             existing.path = skillDir
             existing.canonicalPath = discovered.canonicalPath
             existing.scope = "global"
             existing.projectName = null
             existing.folderName = folderName
+            Object.assign(existing, timestamps)
           }
           continue
         }
 
-        const lockEntry = lock.skills[folderName]
+        const timestamps = await resolveSkillTimestamps(discovered.canonicalPath, lockEntry)
         skillMap.set(skillKey, {
           name: skillName,
           description: parsed?.description || "",
@@ -810,8 +901,8 @@ async function listInstalledSkillsInternal(
           versionMismatches: [],
           source: lockEntry?.source,
           sourceType: lockEntry?.sourceType,
-          installedAt: lockEntry?.installedAt,
-          updatedAt: lockEntry?.updatedAt,
+          hasLinkedSource: lockEntry?.sourceLinked === true || lockEntry?.sourceType === "github",
+          ...timestamps,
           folderName,
         })
       }
@@ -921,11 +1012,11 @@ async function collectGlobalSkillLocations(): Promise<Map<string, RendererSkillL
 function getSkillRemovalRoots(): string[] {
   ensureStores()
   const customRoots = settingsStore?.get<string[]>(CUSTOM_SCAN_PATHS_KEY, []) ?? []
-  return Array.from(new Set([
-    CANONICAL_SKILLS_DIR,
+  return resolveSkillRemovalRoots([
+    ...getSkillStorageRoots(),
     ...Object.values(agentRegistry).flatMap(getAgentGlobalSkillDirectories),
     ...customRoots.map((custom) => path.resolve(custom.replace(/^~(?=$|\/|\\)/, home))),
-  ].map((root) => path.resolve(root))))
+  ])
 }
 
 function pathComparisonKey(value: string): string {
@@ -960,10 +1051,15 @@ async function buildSkillRemovalPlan(input: SkillRemovalRequest): Promise<{
 
   const currentSkills = await listInstalledSkillsInternal()
   for (const target of request.targets) {
-    await addPath(target.path, target.scope)
-    if (target.scope !== "global") continue
-
+    if (target.scope !== "global") {
+      await addPath(target.path, target.scope)
+      continue
+    }
     const selectedRealPath = await fs.realpath(target.path)
+    const physicalRoot = getSkillStorageRoots().find((root) =>
+      !pathsEqual(root, CANONICAL_SKILLS_DIR) && isPathInside(root, selectedRealPath),
+    )
+    await addPath(physicalRoot ? selectedRealPath : target.path, target.scope)
     const selectedRealKey = pathComparisonKey(selectedRealPath)
 
     // 只清理确实指向同一母本的 Agent/项目 Junction。同名但实体内容
@@ -972,6 +1068,8 @@ async function buildSkillRemovalPlan(input: SkillRemovalRequest): Promise<{
       if (skill.name.trim().toLowerCase() !== expectedName) continue
       const realPath = await fs.realpath(skill.path).catch(() => null)
       if (!realPath || pathComparisonKey(realPath) !== selectedRealKey) continue
+      if (physicalRoot && isPathInside(CANONICAL_SKILLS_DIR, skill.path) &&
+          !(await fs.lstat(skill.path)).isSymbolicLink()) continue
       await addPath(skill.path, skill.scope)
     }
 
@@ -980,6 +1078,7 @@ async function buildSkillRemovalPlan(input: SkillRemovalRequest): Promise<{
         const discovered = await findSkillDirectories(skillsDir)
         for (const location of discovered) {
           if (pathComparisonKey(location.canonicalPath) !== selectedRealKey) continue
+          if (physicalRoot && pathsEqual(skillsDir, CANONICAL_SKILLS_DIR) && !location.isSymbolicLink) continue
           await addPath(location.path, "global")
         }
       }
@@ -1011,7 +1110,10 @@ async function resolveAgentSkillBinding(
   request: SkillRemovalRequest
   bindings: Array<{ skillPath: string; folderName: string }>
 }> {
-  const request = validateSkillRemovalRequest(input, getSkillRemovalRoots())
+  const request = validateSkillRemovalRequest(
+    selectAgentSkillRemovalTargets(input, getAgentGlobalSkillDirectories(agent), getSkillStorageRoots()),
+    getSkillRemovalRoots(),
+  )
   const expectedName = request.name.toLowerCase()
   const selectedRealPaths = new Set<string>()
   for (const target of request.targets) {
@@ -1102,8 +1204,8 @@ async function toRendererSkills(skills: InternalSkill[], identifySources = false
         if (source) {
           // 扫描时回填原始缓存行；普通列表读取不解析来源文件。
           const raw = rawByPath.get(rest.canonicalPath)
-          if (raw) Object.assign(raw, source)
-          return { ...rest, ...source }
+          if (raw) Object.assign(raw, source, { hasLinkedSource: false })
+          return { ...rest, ...source, hasLinkedSource: false }
         }
       }
       return rest
@@ -1138,6 +1240,7 @@ function createSkillsFingerprint(skills: InternalSkill[]): string {
         ),
         source: skill.source,
         sourceType: skill.sourceType,
+        hasLinkedSource: skill.hasLinkedSource,
         installedAt: skill.installedAt,
         updatedAt: skill.updatedAt,
         folderName: skill.folderName,
@@ -1231,10 +1334,15 @@ async function runRescan(
 // ---------------------------------------------------------------------------
 
 let _mainWindow: BrowserWindow | null = null
+let restartSkillWatcher: (() => Promise<void>) | null = null
 
 /** Called from the main process to provide a window reference for pushing events. */
 export function setMainWindow(win: BrowserWindow): void {
   _mainWindow = win
+}
+
+export function setSkillWatcherRestart(handler: () => Promise<void>): void {
+  restartSkillWatcher = handler
 }
 
 /**
@@ -1335,9 +1443,13 @@ async function rescanSingleSkill(changedPath: string): Promise<void> {
   }
 
   if (resolvedDir && parsed && agents.length > 0) {
-    const lockEntry = lock.skills[skillFolderName]
+    const lockEntry = getSkillSourceRecord(lock, resolvedDir)
+    const timestamps = await resolveSkillTimestamps(resolvedDir, lockEntry)
     const masterBinding = bindings.find((binding) => binding.agentName === "universal")
-    const scope = masterBinding ? "global" : getScopeForPath(resolvedDir)
+    const scope = masterBinding ? "global" : getScannedSkillScope(
+      { path: linkDir ?? resolvedDir, canonicalPath: resolvedDir },
+      getGlobalSkillRoots(),
+    )
     const updatedSkill = {
       name: parsed.name,
       description: parsed.description,
@@ -1352,8 +1464,8 @@ async function rescanSingleSkill(changedPath: string): Promise<void> {
       versionMismatches: await findVersionMismatches(masterBinding, bindings),
       source: lockEntry?.source,
       sourceType: lockEntry?.sourceType,
-      installedAt: lockEntry?.installedAt,
-      updatedAt: lockEntry?.updatedAt,
+      hasLinkedSource: lockEntry?.sourceLinked === true || lockEntry?.sourceType === "github",
+      ...timestamps,
       folderName: skillFolderName,
     }
 
@@ -1453,7 +1565,9 @@ function parseSource(source: string): ParsedSource | null {
     source.startsWith("./") ||
     source.startsWith("../") ||
     source.startsWith("/") ||
-    source.startsWith("~/")
+    source.startsWith("~/") ||
+    /^[a-zA-Z]:[\\/]/.test(source) ||
+    source.startsWith("\\\\")
   ) {
     let resolved = source
     if (resolved.startsWith("~/")) {
@@ -1515,6 +1629,122 @@ async function discoverSkillsInDir(
   }
 
   return skills
+}
+
+interface SkillSourceTarget {
+  name: string
+  canonicalPath: string
+}
+
+interface ResolvedSourceSkill {
+  skillDir: string
+  temporaryRoot: string | null
+  parsed: ParsedSource
+}
+
+interface CachedSourceRoot {
+  sourceRoot: string
+  temporaryRoot: string | null
+}
+
+async function resolveSourceSkill(
+  source: string,
+  target: SkillSourceTarget,
+  skillId?: string,
+  sharedRoots?: Map<string, CachedSourceRoot>,
+): Promise<ResolvedSourceSkill> {
+  const parsed = parseSource(source)
+  if (!parsed) throw new Error("来源地址无效，请填写 GitHub 仓库地址、owner/repo 或本地路径")
+
+  const cached = sharedRoots?.get(source)
+  let sourceRoot = cached?.sourceRoot
+  let temporaryRoot = cached?.temporaryRoot ?? null
+  let allowSingleFallback = false
+  if (!sourceRoot && parsed.type === "github") {
+    temporaryRoot = path.join(
+      os.tmpdir(),
+      `skillbox-source-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+    )
+    const downloadResult = await acquireGitHubRepository({
+      owner: parsed.owner,
+      repo: parsed.repo,
+      skillId: sharedRoots ? undefined : skillId || path.basename(target.canonicalPath),
+      destination: temporaryRoot,
+      clone: gitClone,
+      fetchImpl: marketFetch,
+    })
+    if (!downloadResult.success) {
+      await fs.rm(temporaryRoot, { recursive: true, force: true }).catch(() => {})
+      throw new Error(downloadResult.error)
+    }
+    sourceRoot = temporaryRoot
+    allowSingleFallback = downloadResult.method === "files"
+    sharedRoots?.set(source, { sourceRoot, temporaryRoot })
+  } else if (!sourceRoot) {
+    sourceRoot = parsed.url
+    if (!(await dirExists(sourceRoot))) throw new Error("本地来源目录不存在")
+    // 用户明确选中某个 Skill 目录时，以该目录为准，不依赖本地副本的名称。
+    if (await fileExists(path.join(sourceRoot, SKILL_MD))) {
+      return { skillDir: sourceRoot, temporaryRoot: null, parsed }
+    }
+    sharedRoots?.set(source, { sourceRoot, temporaryRoot: null })
+  }
+
+  const discovered = await discoverSkillsInDir(sourceRoot)
+  const expectedId = skillId || path.basename(target.canonicalPath)
+  let selected: ParsedSkill
+  try {
+    selected = requireLinkedSourceSkill(discovered, sourceRoot, expectedId, target.name, allowSingleFallback)
+  } catch (error) {
+    if (temporaryRoot && !sharedRoots) {
+      await fs.rm(temporaryRoot, { recursive: true, force: true }).catch(() => {})
+    }
+    throw error
+  }
+
+  return {
+    skillDir: path.dirname(selected.filePath),
+    temporaryRoot,
+    parsed,
+  }
+}
+
+async function replaceSkillDirectory(
+  sourceDir: string,
+  targetDir: string,
+  onReplaced?: () => Promise<void>,
+): Promise<void> {
+  const resolvedSource = await fs.realpath(sourceDir).catch(() => path.resolve(sourceDir))
+  const resolvedTarget = await fs.realpath(targetDir).catch(() => path.resolve(targetDir))
+  if (pathComparisonKey(resolvedSource) === pathComparisonKey(resolvedTarget)) {
+    throw new Error("来源目录与当前 Skill 相同，没有可更新的内容")
+  }
+
+  const parent = path.dirname(resolvedTarget)
+  const stagingPath = path.join(parent, `.skillbox-update-${crypto.randomUUID()}`)
+  const rollbackPath = path.join(parent, `.skillbox-update-rollback-${crypto.randomUUID()}`)
+  let targetMoved = false
+  try {
+    await fs.cp(resolvedSource, stagingPath, { recursive: true })
+    if (!(await fileExists(path.join(stagingPath, "SKILL.md")))) {
+      throw new Error("来源 Skill 缺少 SKILL.md")
+    }
+    await fs.rename(resolvedTarget, rollbackPath)
+    targetMoved = true
+    await fs.rename(stagingPath, resolvedTarget)
+    await onReplaced?.()
+    targetMoved = false
+    await fs.rm(rollbackPath, { recursive: true, force: true }).catch((error) => {
+      console.warn("[skill-update] failed to remove rollback directory", error)
+    })
+  } catch (error) {
+    await fs.rm(stagingPath, { recursive: true, force: true }).catch(() => {})
+    if (targetMoved) {
+      await fs.rm(resolvedTarget, { recursive: true, force: true }).catch(() => {})
+      await fs.rename(rollbackPath, resolvedTarget).catch(() => {})
+    }
+    throw error
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1707,7 +1937,7 @@ function parseTrending(html: string): TrendingSkill[] {
 async function fetchTrending(): Promise<TrendingSkill[]> {
   const res = await marketFetch(SKILLS_SH_TRENDING_URL, {
     headers: {
-      "User-Agent": "SkillsGate (+https://github.com/skillsgate/skillsgate)",
+      "User-Agent": "Skillbox (+https://github.com/Renly1994/Skillbox)",
     },
   })
   if (!res.ok) {
@@ -1730,9 +1960,11 @@ let settingsStore!: SettingsStore
 let serverStore!: RemoteServerStore
 let skillStore!: RemoteSkillStore
 let favoritesStore!: FavoritesStore
+let translationCacheStore!: TranslationCacheStore
+let activityStore!: ActivityStore
 
 function ensureStores(): void {
-  if (settingsStore && serverStore && skillStore && favoritesStore) {
+  if (settingsStore && serverStore && skillStore && favoritesStore && translationCacheStore) {
     return
   }
 
@@ -1741,6 +1973,109 @@ function ensureStores(): void {
   serverStore ??= new RemoteServerStore(db)
   skillStore ??= new RemoteSkillStore(db)
   favoritesStore ??= new FavoritesStore(db)
+  translationCacheStore ??= new TranslationCacheStore(db)
+  activityStore ??= new ActivityStore(db)
+}
+
+function getSkillStorageRoots(): string[] {
+  let actual = CANONICAL_SKILLS_DIR
+  try { actual = fsSync.realpathSync.native(CANONICAL_SKILLS_DIR) }
+  catch { /* 尚未创建或目标盘暂不可用 */ }
+  return pathsEqual(actual, CANONICAL_SKILLS_DIR)
+    ? [CANONICAL_SKILLS_DIR]
+    : [CANONICAL_SKILLS_DIR, actual]
+}
+
+async function remapSkillStorageRecords(previous: string, next: string): Promise<void> {
+  const previousRoots = Array.from(new Set([previous, CANONICAL_SKILLS_DIR]))
+  const lock = await readSkillLock()
+  for (const entry of Object.values(lock.skills)) {
+    entry.source = remapSkillStoragePathFromRoots(entry.source, previousRoots, next)
+    if (entry.originalUrl) {
+      entry.originalUrl = remapSkillStoragePathFromRoots(entry.originalUrl, previousRoots, next)
+    }
+  }
+  if (lock.linkedSources) {
+    let linkedSources = lock.linkedSources
+    for (const previousRoot of previousRoots) {
+      linkedSources = remapPathKeyedRecords(
+        linkedSources,
+        previousRoot,
+        next,
+        (entry) => ({
+          ...entry,
+          source: remapSkillStoragePathFromRoots(entry.source, previousRoots, next),
+          originalUrl: entry.originalUrl
+            ? remapSkillStoragePathFromRoots(entry.originalUrl, previousRoots, next)
+            : undefined,
+        }),
+      )
+    }
+    lock.linkedSources = Object.fromEntries(
+      Object.entries(linkedSources).map(([key, entry]) => [pathComparisonKey(key), entry]),
+    )
+  }
+  await writeSkillLock(lock)
+  const collections = settingsStore.get<Record<string, string[]>>(COLLECTIONS_KEY, {})
+  settingsStore.set(COLLECTIONS_KEY, Object.fromEntries(
+    Object.entries(collections).map(([name, paths]) => [
+      name,
+      previousRoots.reduce(
+        (values, previousRoot) => remapSkillStoragePathList(values, previousRoot, next),
+        paths,
+      ),
+    ]),
+  ))
+  let aliases = settingsStore.get<Record<string, string>>("alias.skill", {})
+  for (const previousRoot of previousRoots) {
+    aliases = remapPathKeyedRecords(aliases, previousRoot, next)
+  }
+  settingsStore.set("alias.skill", aliases)
+  for (const previousRoot of previousRoots) {
+    translationCacheStore.remapPreferenceIdentities(previousRoot, next)
+  }
+}
+
+let defaultVersionStoragePath: string | null = null
+
+export async function prepareSkillVersionStorage(): Promise<void> {
+  ensureStores()
+  if (settingsStore.get<string | null>(SKILL_VERSION_STORAGE_KEY, null)) return
+  const legacyPath = path.join(app.getPath("appData"), "@skillsgate", "desktop", "skill-versions")
+  const brandedPath = path.join(app.getPath("appData"), "Skillbox", "skill-versions")
+  try {
+    defaultVersionStoragePath = await migrateDefaultSkillVersionStore(legacyPath, brandedPath)
+  } catch (error) {
+    defaultVersionStoragePath = legacyPath
+    console.warn("Failed to move Skillbox version storage:", error)
+  }
+}
+
+function getSkillVersionStoragePath(): string {
+  ensureStores()
+  const configured = settingsStore.get<string | null>(SKILL_VERSION_STORAGE_KEY, null)
+  return configured ? path.resolve(configured) : defaultVersionStoragePath ?? path.join(app.getPath("userData"), "skill-versions")
+}
+
+function getSkillVersionRetention(): number {
+  ensureStores()
+  const configured = settingsStore.get<number>(
+    SKILL_VERSION_RETENTION_KEY,
+    DEFAULT_SKILL_VERSION_RETENTION,
+  )
+  return Math.min(100, Math.max(3, Math.round(Number(configured) || DEFAULT_SKILL_VERSION_RETENTION)))
+}
+
+function getSkillVersionStore(): SkillVersionStore {
+  return new SkillVersionStore(getSkillVersionStoragePath(), getSkillVersionRetention())
+}
+
+async function saveSkillVersion(
+  skillPath: string,
+  skillName: string,
+  reason: SkillVersionReason,
+): Promise<void> {
+  await getSkillVersionStore().create(skillPath, skillName, reason)
 }
 
 const COMMON_BIN_DIRS =
@@ -1784,6 +2119,128 @@ async function entryExists(p: string): Promise<boolean> {
 
 const marketFetch = net.fetch.bind(net) as unknown as typeof fetch
 const marketplaceInstallTasks = new MarketplaceInstallTaskStore()
+let skillStorageMigrationInProgress = false
+
+function assertSkillStorageReady(): void {
+  if (skillStorageMigrationInProgress) {
+    throw new Error("通用 Skill 目录正在迁移，请完成后再操作")
+  }
+}
+
+const TRANSLATION_CONFIG_KEY = "translation.api.config"
+const TRANSLATION_API_KEY = "translation.api.key.encrypted"
+const TRANSLATION_USAGE_KEY = "translation.usage.total"
+let translationInFlight = false
+
+interface TranslationConfigInput extends TranslationConfig {
+  apiKey?: string
+}
+
+interface TranslationViewInput {
+  identity: string
+  content: string
+  cacheKey: string
+  sourceDescription?: string | null
+  translatedDescription?: string | null
+  showTranslation: boolean
+}
+
+function validateTranslationIdentity(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || value.length > 2_048) {
+    throw new Error("无效的 Skill 翻译标识")
+  }
+  return value.trim()
+}
+
+function validateTranslationCacheKey(value: unknown): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/i.test(value)) {
+    throw new Error("无效的翻译缓存标识")
+  }
+  return value.toLowerCase()
+}
+
+function normalizeTranslationDescription(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null
+}
+
+function readTranslationConfig(): TranslationConfig {
+  const fallback = getTranslationPreset("deepseek")
+  const stored = settingsStore.get<TranslationConfig>(TRANSLATION_CONFIG_KEY, fallback)
+  try {
+    return validateTranslationConfig(stored)
+  } catch {
+    return fallback
+  }
+}
+
+function readTranslationApiKey(): string | null {
+  const encrypted = settingsStore.get<string | null>(TRANSLATION_API_KEY, null)
+  if (!encrypted || !safeStorage.isEncryptionAvailable()) return null
+  try {
+    return safeStorage.decryptString(Buffer.from(encrypted, "base64")) || null
+  } catch {
+    return null
+  }
+}
+
+function translationConfigView() {
+  const apiKey = readTranslationApiKey()
+  const usage = normalizeTranslationUsage(
+    settingsStore.get<TranslationUsage | null>(TRANSLATION_USAGE_KEY, null),
+  )
+  return {
+    ...readTranslationConfig(),
+    apiKeyConfigured: Boolean(apiKey),
+    usage,
+  }
+}
+
+async function readTranslationApiError(response: Response): Promise<string> {
+  const text = (await response.text()).slice(0, 2_000)
+  try {
+    const payload = JSON.parse(text) as Record<string, any>
+    return String(payload?.error?.message ?? payload?.message ?? payload?.detail ?? response.statusText)
+  } catch {
+    return text.trim() || response.statusText
+  }
+}
+
+async function requestTranslation(
+  config: TranslationConfig,
+  apiKey: string,
+  content: string,
+) {
+  const request = buildTranslationRequest(config, apiKey, content)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 90_000)
+  try {
+    const response = await marketFetch(request.url, {
+      method: "POST",
+      headers: request.headers,
+      body: JSON.stringify(request.body),
+      redirect: "error",
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      const detail = await readTranslationApiError(response)
+      throw new Error(`翻译请求失败（HTTP ${response.status}）：${detail}`)
+    }
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch {
+      throw new Error("模型 API 返回了无法识别的响应")
+    }
+    return parseTranslationResponse(config.apiFormat, payload)
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error("翻译请求超过 90 秒，已停止且不会自动重试")
+    }
+    throw error
+  } finally {
+    clearTimeout(timeout)
+  }
+}
 
 export function hasActiveMarketplaceInstalls(): boolean {
   return marketplaceInstallTasks.hasRunningTasks()
@@ -1894,9 +2351,12 @@ export function registerIpcHandlers(): void {
       // Return stale-while-revalidate: send cached data now, rescan later
       // 先返回缓存保证启动速度，再在后台完整扫描；项目级副本的 Agent 归属
       // 与版本差异只有完整扫描才能重新计算，升级后不能依赖用户手动刷新。
-      rescanAndCache().catch((err) => {
-        console.error("Background rescan failed:", err)
-      })
+      if (!backgroundRescanDone) {
+        backgroundRescanDone = true
+        rescanAndCache().catch((err) => {
+          console.error("Background rescan failed:", err)
+        })
+      }
       return toRendererSkills(cached)
     }
     // Cache is empty (first launch or cleared) -- do a full scan synchronously
@@ -1974,6 +2434,7 @@ export function registerIpcHandlers(): void {
     ): Promise<
       Array<{ skillName: string; agent: string; success: boolean; error?: string }>
     > => {
+      assertSkillStorageReady()
       const failedResult = (error: string) => [{
         skillName: skillId || source,
         agent: "unknown",
@@ -2034,7 +2495,7 @@ export function registerIpcHandlers(): void {
         let sourceDir: string
         let allowSingleSkillFallback = false
         if (parsed.type === "github") {
-          tmpDir = path.join(os.tmpdir(), `skillsgate-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`)
+          tmpDir = path.join(os.tmpdir(), `skillbox-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`)
           const downloadResult = await acquireGitHubRepository({
             owner: parsed.owner,
             repo: parsed.repo,
@@ -2113,6 +2574,7 @@ export function registerIpcHandlers(): void {
                 : parsed.url,
             sourceType: parsed.type,
             originalUrl: source,
+            sourceLinked: true,
             skillFolderHash: "",
             installedAt: existing?.installedAt || now,
             updatedAt: now,
@@ -2157,7 +2619,10 @@ export function registerIpcHandlers(): void {
       const url = `https://skills.sh/api/search?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`
       const res = await marketFetch(url)
       if (!res.ok) throw new Error(`skills.sh search failed (HTTP ${res.status})`)
-      const data = await res.json()
+      const data = (await res.json()) as {
+        skills?: { id: string; skillId: string; name: string; installs: number; source: string }[]
+        count?: number
+      }
       return { skills: data.skills ?? [], count: data.count ?? 0 }
     },
   )
@@ -2179,7 +2644,52 @@ export function registerIpcHandlers(): void {
   )
 
   // Fetch SKILL.md content from GitHub raw (avoids CORS)
+  const summaryCache = new Map<string, string | null>()
   const branchCache = new Map<string, string>()
+
+  ipcMain.handle(
+    "skills:fetch-summary",
+    async (_event, source: string, skillId: string): Promise<string | null> => {
+      const cacheKey = `${source}:${skillId}`
+      if (summaryCache.has(cacheKey)) return summaryCache.get(cacheKey) ?? null
+
+      const sourceParts = source.split("/").filter(Boolean)
+      if (sourceParts.length !== 2 || !skillId.trim()) {
+        summaryCache.set(cacheKey, null)
+        return null
+      }
+
+      try {
+        const skillPath = [...sourceParts, skillId]
+          .map((part) => encodeURIComponent(part))
+          .join("/")
+        const res = await marketFetch(`https://skills.sh/${skillPath}`)
+        if (!res.ok) throw new Error(`skills.sh detail failed (HTTP ${res.status})`)
+
+        const html = await res.text()
+        const descriptionTag = html.match(/<meta\b[^>]*\bname=["']description["'][^>]*>/i)?.[0]
+        const encodedDescription = descriptionTag
+          ?.match(/\bcontent=["']([^"']*)["']/i)?.[1]
+          ?.trim()
+        const description = encodedDescription
+          ? encodedDescription
+            .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+            .replace(/&#(\d+);/g, (_, decimal: string) => String.fromCodePoint(Number.parseInt(decimal, 10)))
+            .replace(/&quot;/g, '"')
+            .replace(/&apos;|&#39;/g, "'")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&amp;/g, "&")
+          : null
+
+        summaryCache.set(cacheKey, description)
+        return description
+      } catch {
+        summaryCache.set(cacheKey, null)
+        return null
+      }
+    },
+  )
 
   ipcMain.handle(
     "skills:fetch-content",
@@ -2308,6 +2818,7 @@ export function registerIpcHandlers(): void {
       _event,
       source: string,
     ): Promise<{ success: boolean; output: string; error?: string }> => {
+      assertSkillStorageReady()
       const safeSource = source.replace(/[^a-zA-Z0-9_./-]/g, "")
       const env = buildCliEnv()
       console.log("[skills:install-via-cli] request received", {
@@ -2597,6 +3108,7 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle("skills:import-package", async (_event, archivePath: string) => {
+    assertSkillStorageReady()
     if (
       typeof archivePath !== "string" ||
       path.extname(archivePath).toLowerCase() !== ".skillbox" ||
@@ -2620,7 +3132,8 @@ export function registerIpcHandlers(): void {
     const existingNames = new Set(existing.map((skill) => skill.name.trim().toLowerCase()))
     const detectedNames = new Set((await detectAgents()).map((agent) => agent.name))
     const lock = await readSkillLock()
-    const tempRoot = await fs.mkdtemp(path.join(path.dirname(CANONICAL_SKILLS_DIR), ".skillbox-import-"))
+    const physicalRoot = await fs.realpath(CANONICAL_SKILLS_DIR).catch(() => CANONICAL_SKILLS_DIR)
+    const tempRoot = await fs.mkdtemp(path.join(path.dirname(physicalRoot), ".skillbox-import-"))
     let imported = 0
     let skipped = 0
     let adapted = 0
@@ -2650,7 +3163,7 @@ export function registerIpcHandlers(): void {
           continue
         }
 
-        const targetDir = path.join(CANONICAL_SKILLS_DIR, safeName)
+        const targetDir = path.join(physicalRoot, safeName)
         if (await dirExists(targetDir)) {
           skipped += 1
           emitMigrationProgress({
@@ -2694,7 +3207,7 @@ export function registerIpcHandlers(): void {
             throw new Error("缺少 SKILL.md")
           }
 
-          await fs.mkdir(CANONICAL_SKILLS_DIR, { recursive: true })
+          await fs.mkdir(physicalRoot, { recursive: true })
           await fs.rename(tempSkillDir, targetDir)
           imported += 1
           importedSafeNames.add(safeName)
@@ -2705,6 +3218,7 @@ export function registerIpcHandlers(): void {
             source: archivePath,
             sourceType: "import",
             originalUrl: targetDir,
+            sourceLinked: false,
             skillFolderHash: "",
             installedAt: now,
             updatedAt: now,
@@ -2785,6 +3299,7 @@ export function registerIpcHandlers(): void {
       _event,
       data: { name: string; description?: string; content?: string; agentNames?: string[] },
     ) => {
+      assertSkillStorageReady()
       const trimmedName = data.name.trim()
       if (!trimmedName) {
         throw new Error("Skill name is required")
@@ -2828,6 +3343,7 @@ Add your skill instructions here.
         source: canonicalDir,
         sourceType: "local",
         originalUrl: canonicalDir,
+        sourceLinked: false,
         skillFolderHash: "",
         installedAt: now,
         updatedAt: now,
@@ -2845,6 +3361,7 @@ Add your skill instructions here.
   // 按扫描得到的真实位置删除。实体目录进入系统回收站，Junction 只解除链接；
   // 不再根据名称推算路径，避免同名误删和空名称导致的目录越界。
   ipcMain.handle("skills:remove", async (_event, input: SkillRemovalRequest) => {
+    assertSkillStorageReady()
     const plan = await buildSkillRemovalPlan(input)
     const removedPaths: string[] = []
     const errors: Array<{ path: string; message: string }> = []
@@ -2891,10 +3408,13 @@ Add your skill instructions here.
       skill.scope === "global" &&
       skill.name.trim().toLowerCase() === plan.request.name.toLowerCase(),
     )
-    if (!stillHasGlobalSkill) {
+    if (removedPaths.length > 0) {
       const lock = await readSkillLock()
+      for (const removedPath of removedPaths) {
+        delete lock.linkedSources?.[pathComparisonKey(removedPath)]
+      }
       for (const target of plan.paths) {
-        if (target.scope !== "global" || !removedKeys.has(pathComparisonKey(target.path))) continue
+        if (stillHasGlobalSkill || target.scope !== "global" || !removedKeys.has(pathComparisonKey(target.path))) continue
         delete lock.skills[path.basename(target.path)]
       }
       await writeSkillLock(lock)
@@ -2905,79 +3425,335 @@ Add your skill instructions here.
     return { skills, removedPaths, collections: nextCollections, errors }
   })
 
-  // Update a skill (re-install from source)
-  ipcMain.handle("skills:update", async (_event, name: string) => {
-    const safeName = sanitizeName(name)
+  ipcMain.handle("skills:choose-source-directory", async () => {
+    const options = { title: "选择 Skill 更新来源目录", properties: ["openDirectory"] as Array<"openDirectory"> }
+    const result = _mainWindow
+      ? await dialog.showOpenDialog(_mainWindow, options)
+      : await dialog.showOpenDialog(options)
+    return result.canceled ? null : result.filePaths[0] ?? null
+  })
+
+  ipcMain.handle(
+    "skills:link-sources",
+    async (
+      _event,
+      input: { skills: Array<SkillSourceTarget & { source: string }> },
+    ): Promise<{ linked: number; errors: Array<{ name: string; canonicalPath: string; message: string }> }> => {
+      assertSkillStorageReady()
+      const targets = Array.isArray(input?.skills) ? input.skills : []
+      if (targets.length === 0) throw new Error("没有选择要关联来源的 Skill")
+
+      const lock = await readSkillLock()
+      const errors: Array<{ name: string; canonicalPath: string; message: string }> = []
+      const sourceCounts = new Map<string, number>()
+      for (const target of targets) {
+        const source = String(target.source ?? "").trim()
+        sourceCounts.set(source, (sourceCounts.get(source) ?? 0) + 1)
+      }
+      const sharedRoots = new Map<string, CachedSourceRoot>()
+      let linked = 0
+      try {
+        for (const target of targets) {
+          const source = String(target.source ?? "").trim()
+          const parsed = parseSource(source)
+          if (!parsed) {
+            errors.push({ name: target.name, canonicalPath: target.canonicalPath, message: "来源地址无效" })
+            continue
+          }
+          if (parsed.type === "local" && !(await dirExists(parsed.url))) {
+            errors.push({ name: target.name, canonicalPath: target.canonicalPath, message: "本地来源目录不存在" })
+            continue
+          }
+          const resolvedPath = path.resolve(target.canonicalPath)
+          if (!isSkillPathAllowed(resolvedPath) || !(await fileExists(path.join(resolvedPath, "SKILL.md")))) {
+            errors.push({ name: target.name, canonicalPath: target.canonicalPath, message: "Skill 路径无效或不在已授权目录中" })
+            continue
+          }
+          const folderName = path.basename(resolvedPath)
+          const existing = getSkillSourceRecord(lock, resolvedPath)
+          let resolved: ResolvedSourceSkill
+          try {
+            resolved = await resolveSourceSkill(
+              source,
+              target,
+              undefined,
+              (sourceCounts.get(source) ?? 0) > 1 ? sharedRoots : undefined,
+            )
+          } catch (error) {
+            errors.push({
+              name: target.name,
+              canonicalPath: target.canonicalPath,
+              message: error instanceof Error ? error.message : "无法检查来源目录",
+            })
+            continue
+          }
+          if (resolved.temporaryRoot && !sharedRoots.has(source)) {
+            await fs.rm(resolved.temporaryRoot, { recursive: true, force: true }).catch(() => {})
+          }
+          lock.linkedSources ??= {}
+          lock.linkedSources[pathComparisonKey(resolvedPath)] = {
+            ...existing,
+            source: parsed.type === "github"
+              ? marketplaceSourceKey(parsed.owner, parsed.repo, folderName)
+              : parsed.url,
+            sourceType: parsed.type,
+            originalUrl: source,
+            sourceLinked: true,
+            skillId: folderName,
+            installedAt: existing?.installedAt,
+            updatedAt: existing?.updatedAt,
+          }
+          linked += 1
+        }
+        if (linked > 0) {
+          await writeSkillLock(lock)
+          await rescanAndCache()
+        }
+        return { linked, errors }
+      } finally {
+        await Promise.all([...sharedRoots.values()].map(({ temporaryRoot }) => temporaryRoot
+          ? fs.rm(temporaryRoot, { recursive: true, force: true }).catch(() => {})
+          : Promise.resolve()))
+      }
+    },
+  )
+
+  ipcMain.handle("skills:list-linked-sources", async (_event, targets: SkillSourceTarget[]) => {
     const lock = await readSkillLock()
-    const entry = lock.skills[safeName]
+    return (Array.isArray(targets) ? targets : []).flatMap((target) => {
+      if (typeof target?.canonicalPath !== "string") return []
+      const resolvedPath = path.resolve(target.canonicalPath)
+      if (!isSkillPathAllowed(resolvedPath)) return []
+      const entry = getSkillSourceRecord(lock, resolvedPath)
+      if (!entry?.originalUrl || (!entry.sourceLinked && entry.sourceType !== "github")) return []
+      return [{ canonicalPath: target.canonicalPath, source: entry.source ?? entry.originalUrl }]
+    })
+  })
 
-    if (!entry?.originalUrl) {
-      throw new Error(`No source recorded for skill "${name}". Cannot update.`)
+  ipcMain.handle(
+    "skills:check-update",
+    async (_event, target: SkillSourceTarget) => {
+      const resolvedPath = path.resolve(target.canonicalPath)
+      if (!isSkillPathAllowed(resolvedPath)) throw new Error("Skill 路径不在已授权目录中")
+      const lock = await readSkillLock()
+      const entry = getSkillSourceRecord(lock, resolvedPath)
+      if (!entry?.originalUrl || (!entry.sourceLinked && entry.sourceType !== "github")) {
+        throw new Error("这个 Skill 尚未关联来源")
+      }
+
+      const resolved = await resolveSourceSkill(entry.originalUrl, target, entry.skillId)
+      try {
+        const changes = await compareSkillContents(resolvedPath, resolved.skillDir)
+        return {
+          available: changes.length > 0,
+          source: entry.source,
+          changes,
+        }
+      } finally {
+        if (resolved.temporaryRoot) {
+          await fs.rm(resolved.temporaryRoot, { recursive: true, force: true }).catch(() => {})
+        }
+      }
+    },
+  )
+
+  // 更新前后都保存外置快照；Skill 目录本身不会写入版本元数据。
+  ipcMain.handle("skills:update", async (_event, target: SkillSourceTarget) => {
+    assertSkillStorageReady()
+    const resolvedPath = path.resolve(target.canonicalPath)
+    if (!isSkillPathAllowed(resolvedPath)) throw new Error("Skill 路径不在已授权目录中")
+    const lock = await readSkillLock()
+    const entry = getSkillSourceRecord(lock, resolvedPath)
+    if (!entry?.originalUrl || (!entry.sourceLinked && entry.sourceType !== "github")) {
+      throw new Error("这个 Skill 尚未关联来源")
     }
 
-    // Re-install from the original source
-    // This triggers the install handler logic internally
-    const detected = await detectAgents()
-    const agentNames = detected.map((a) => a.name)
+    const resolved = await resolveSourceSkill(entry.originalUrl, target, entry.skillId)
+    try {
+      const changes = await compareSkillContents(resolvedPath, resolved.skillDir)
+      if (changes.length === 0) return { updated: false, changes: [] }
 
-    const parsed = parseSource(entry.originalUrl)
-    if (!parsed) {
-      throw new Error(`Cannot parse stored source: "${entry.originalUrl}"`)
-    }
-
-    let sourceDir: string
-    let tmpDir: string | null = null
-
-    if (parsed.type === "github") {
-      tmpDir = path.join(os.tmpdir(), `skillsgate-upd-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`)
-      const downloadResult = await acquireGitHubRepository({
-        owner: parsed.owner,
-        repo: parsed.repo,
-        skillId: safeName,
-        destination: tmpDir,
-        clone: gitClone,
-        fetchImpl: marketFetch,
+      await saveSkillVersion(resolvedPath, target.name, "initial")
+      await replaceSkillDirectory(resolved.skillDir, resolvedPath, async () => {
+        await saveSkillVersion(resolvedPath, target.name, "update")
       })
-      if (!downloadResult.success) {
-        throw new Error(downloadResult.error)
+
+      const recordKey = pathComparisonKey(resolvedPath)
+      if (lock.linkedSources?.[recordKey]) {
+        lock.linkedSources[recordKey] = { ...entry, updatedAt: new Date().toISOString() }
+      } else {
+        lock.skills[path.basename(resolvedPath)] = { ...entry, updatedAt: new Date().toISOString() }
       }
-      sourceDir = tmpDir
-    } else {
-      sourceDir = parsed.url
-    }
-
-    const discovered = await discoverSkillsInDir(sourceDir)
-    // Find the specific skill we're updating
-    const target = discovered.find(
-      (s) => sanitizeName(s.name) === safeName,
-    )
-
-    if (!target) {
-      if (tmpDir) {
-        await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
-      }
-      throw new Error(`Skill "${name}" not found in source.`)
-    }
-
-    const skillDir = path.dirname(target.filePath)
-
-    for (const agentName of agentNames) {
-      const agent = agentRegistry[agentName]
-      if (agent) {
-        await installSkillToAgent(skillDir, target.name, agent)
+      await writeSkillLock(lock)
+      await rescanAndCache()
+      return { updated: true, changes }
+    } finally {
+      if (resolved.temporaryRoot) {
+        await fs.rm(resolved.temporaryRoot, { recursive: true, force: true }).catch(() => {})
       }
     }
+  })
 
-    // Update lock entry timestamp
-    lock.skills[safeName] = {
-      ...entry,
-      updatedAt: new Date().toISOString(),
-    }
-    await writeSkillLock(lock)
+  ipcMain.handle("skill-versions:list", async (_event, target: SkillSourceTarget) => {
+    const resolvedPath = path.resolve(target.canonicalPath)
+    if (!isSkillPathAllowed(resolvedPath)) throw new Error("Skill 路径不在已授权目录中")
+    return getSkillVersionStore().list(resolvedPath, target.name)
+  })
 
-    if (tmpDir) {
-      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  ipcMain.handle(
+    "skill-versions:create",
+    async (_event, target: SkillSourceTarget, reason: SkillVersionReason = "manual") => {
+      assertSkillStorageReady()
+      const resolvedPath = path.resolve(target.canonicalPath)
+      if (!isSkillPathAllowed(resolvedPath)) throw new Error("Skill 路径不在已授权目录中")
+      return getSkillVersionStore().create(resolvedPath, target.name, reason)
+    },
+  )
+
+  ipcMain.handle(
+    "skill-versions:read-file",
+    async (_event, target: SkillSourceTarget, versionId: string, relativePath?: string) => {
+      const resolvedPath = path.resolve(target.canonicalPath)
+      if (!isSkillPathAllowed(resolvedPath)) throw new Error("Skill 路径不在已授权目录中")
+      return getSkillVersionStore().readFile(resolvedPath, target.name, versionId, relativePath)
+    },
+  )
+
+  ipcMain.handle(
+    "skill-versions:restore",
+    async (_event, target: SkillSourceTarget, versionId: string) => {
+      assertSkillStorageReady()
+      const resolvedPath = path.resolve(target.canonicalPath)
+      if (!isSkillPathAllowed(resolvedPath)) throw new Error("Skill 路径不在已授权目录中")
+      const store = getSkillVersionStore()
+      await store.create(resolvedPath, target.name, "initial")
+      await store.restore(resolvedPath, target.name, versionId)
+      await store.create(resolvedPath, target.name, "restore")
+      await rescanAndCache()
+    },
+  )
+
+  ipcMain.handle("skill-versions:storage-info", async () => {
+    return getSkillVersionStore().info()
+  })
+
+  ipcMain.handle("skill-versions:set-retention", async (_event, rawValue: number) => {
+    ensureStores()
+    const value = Math.min(100, Math.max(3, Math.round(Number(rawValue) || DEFAULT_SKILL_VERSION_RETENTION)))
+    settingsStore.set(SKILL_VERSION_RETENTION_KEY, value)
+    const store = getSkillVersionStore()
+    await store.prune()
+    return store.info()
+  })
+
+  ipcMain.handle("skill-versions:choose-storage", async () => {
+    assertSkillStorageReady()
+    ensureStores()
+    const result = _mainWindow
+      ? await dialog.showOpenDialog(_mainWindow, { properties: ["openDirectory", "createDirectory"] })
+      : await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] })
+    if (result.canceled || !result.filePaths[0]) return null
+
+    const nextRoot = path.join(result.filePaths[0], "Skillbox Versions")
+    if (isSkillPathAllowed(nextRoot)) {
+      throw new Error("版本仓库不能放在 Skill 扫描目录内，请选择其他位置")
     }
+    const previousRoot = getSkillVersionStoragePath()
+    await migrateSkillVersionStore(previousRoot, nextRoot)
+    settingsStore.set(SKILL_VERSION_STORAGE_KEY, nextRoot)
+    return getSkillVersionStore().info()
+  })
+
+  ipcMain.handle("skill-versions:open-storage", async () => {
+    const root = getSkillVersionStoragePath()
+    await fs.mkdir(root, { recursive: true })
+    await shell.openPath(root)
+  })
+
+  ipcMain.handle("skill-storage:info", async () => {
+    const rootStat = await fs.lstat(CANONICAL_SKILLS_DIR).catch(() => null)
+    const actualPath = await fs.realpath(CANONICAL_SKILLS_DIR).catch(() => null)
+    if (rootStat?.isSymbolicLink() && !actualPath) {
+      throw new Error("通用 Skill 存储盘不可用，请连接磁盘后重试")
+    }
+    return {
+      path: actualPath ?? CANONICAL_SKILLS_DIR,
+      compatibilityPath: CANONICAL_SKILLS_DIR,
+      isLinked: Boolean(actualPath && !pathsEqual(actualPath, CANONICAL_SKILLS_DIR)),
+    }
+  })
+
+  ipcMain.handle("skill-storage:choose", async () => {
+    ensureStores()
+    if (skillStorageMigrationInProgress || marketplaceInstallTasks.hasRunningTasks()) {
+      throw new Error("有 Skill 正在安装或迁移，请完成后再更改存储位置")
+    }
+    const chosen = _mainWindow
+      ? await dialog.showOpenDialog(_mainWindow, { properties: ["openDirectory", "createDirectory"] })
+      : await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] })
+    if (chosen.canceled || !chosen.filePaths[0]) return null
+    const destination = path.join(await fs.realpath(chosen.filePaths[0]), "Skillbox Skills")
+    const versionRoot = await fs.realpath(getSkillVersionStoragePath()).catch(() => getSkillVersionStoragePath())
+    if (isSkillPathAllowed(destination) ||
+        pathsEqual(destination, versionRoot) ||
+        isPathInside(destination, versionRoot) ||
+        isPathInside(versionRoot, destination)) {
+      throw new Error("新目录不能放在 Skill 或版本仓库目录内，请选择其他位置")
+    }
+    const previous = await fs.realpath(CANONICAL_SKILLS_DIR).catch(() => CANONICAL_SKILLS_DIR)
+    if (pathsEqual(previous, destination)) {
+      return { path: previous, compatibilityPath: CANONICAL_SKILLS_DIR, isLinked: !pathsEqual(previous, CANONICAL_SKILLS_DIR) }
+    }
+
+    if (skillStorageMigrationInProgress || marketplaceInstallTasks.hasRunningTasks()) {
+      throw new Error("有 Skill 正在安装或迁移，请完成后再更改存储位置")
+    }
+    skillStorageMigrationInProgress = true
+    try {
+      const versions = await prepareSkillVersionPathMigration(
+        getSkillVersionStoragePath(),
+        previous,
+        destination,
+        [CANONICAL_SKILLS_DIR],
+      )
+      let migrated: Awaited<ReturnType<typeof migrateSkillStorage>>
+      try {
+        const managedPrevious = settingsStore.get<string | null>(SKILL_STORAGE_PATH_KEY, null)
+        migrated = await migrateSkillStorage(CANONICAL_SKILLS_DIR, destination, {
+          removePreviousTarget: Boolean(managedPrevious && pathsEqual(managedPrevious, previous)),
+        })
+      } catch (error) {
+        await versions.rollback()
+        throw error
+      }
+      const warnings: string[] = []
+      try { settingsStore.set(SKILL_STORAGE_PATH_KEY, migrated.path) }
+      catch (error) { warnings.push(`存储位置记录失败：${error instanceof Error ? error.message : String(error)}`) }
+      try { await remapSkillStorageRecords(migrated.previousPath, migrated.path) }
+      catch (error) { warnings.push(`来源记录更新失败：${error instanceof Error ? error.message : String(error)}`) }
+      try { await versions.commit() }
+      catch (error) { warnings.push(`旧版本索引清理失败：${error instanceof Error ? error.message : String(error)}`) }
+      if (migrated.retainedOldPath) warnings.push(`旧目录未能自动清理：${migrated.retainedOldPath}`)
+      try { await restartSkillWatcher?.() }
+      catch (error) { warnings.push(`文件监听重启失败：${error instanceof Error ? error.message : String(error)}`) }
+      try { await rescanAndCache() }
+      catch (error) { warnings.push(`Skill 列表刷新失败：${error instanceof Error ? error.message : String(error)}`) }
+      return {
+        path: migrated.path,
+        compatibilityPath: CANONICAL_SKILLS_DIR,
+        isLinked: true,
+        warning: warnings.join("；") || undefined,
+      }
+    } finally {
+      skillStorageMigrationInProgress = false
+    }
+  })
+
+  ipcMain.handle("skill-storage:open", async () => {
+    const root = await fs.realpath(CANONICAL_SKILLS_DIR).catch(() => CANONICAL_SKILLS_DIR)
+    await fs.mkdir(root, { recursive: true })
+    const error = await shell.openPath(root)
+    if (error) throw new Error(error)
   })
 
   // -------------------------------------------------------------------------
@@ -3061,7 +3837,9 @@ Add your skill instructions here.
       ensureStores()
       const server = serverStore.get(serverId)
       if (!server) throw new Error("Server not found")
-      return planPush(server, { mirror })
+      return planPush(server, { mirror }, {
+        localSkills: await listInstalledSkillsInternal({ skipCustomPaths: true }),
+      })
     },
   )
 
@@ -3071,7 +3849,9 @@ Add your skill instructions here.
       ensureStores()
       const server = serverStore.get(serverId)
       if (!server) throw new Error("Server not found")
-      const freshPreview = await planPush(server, { mirror: preview?.mirror === true })
+      const freshPreview = await planPush(server, { mirror: preview?.mirror === true }, {
+        localSkills: await listInstalledSkillsInternal({ skipCustomPaths: true }),
+      })
       const signature = (value: PushPreview) => JSON.stringify({
         mirror: value.mirror,
         add: value.toAdd.map((entry) => [entry.folderName, entry.remoteDir]).sort(),
@@ -3098,6 +3878,137 @@ Add your skill instructions here.
   ipcMain.handle("servers:count", () => {
     ensureStores()
     return serverStore.count()
+  })
+
+  // -------------------------------------------------------------------------
+  // Skill translation
+  // -------------------------------------------------------------------------
+
+  ipcMain.handle("translation:get-config", () => {
+    ensureStores()
+    return translationConfigView()
+  })
+
+  ipcMain.handle("translation:reveal-api-key", () => {
+    ensureStores()
+    const apiKey = readTranslationApiKey()
+    if (!apiKey) throw new Error("未配置大模型 API")
+    return apiKey
+  })
+
+  ipcMain.handle("translation:save-config", (_event, input: TranslationConfigInput) => {
+    ensureStores()
+    const config = validateTranslationConfig(input)
+    const nextApiKey = input.apiKey?.trim()
+    const currentApiKey = readTranslationApiKey()
+
+    if (!nextApiKey && !currentApiKey) {
+      throw new Error("请输入 API Key")
+    }
+    if (nextApiKey) {
+      if (!safeStorage.isEncryptionAvailable()) {
+        throw new Error("当前系统安全存储不可用，无法安全保存 API Key")
+      }
+      const encrypted = safeStorage.encryptString(nextApiKey).toString("base64")
+      settingsStore.set(TRANSLATION_API_KEY, encrypted)
+    }
+
+    settingsStore.set(TRANSLATION_CONFIG_KEY, config)
+    return translationConfigView()
+  })
+
+  ipcMain.handle("translation:clear-config", () => {
+    ensureStores()
+    settingsStore.delete(TRANSLATION_CONFIG_KEY)
+    settingsStore.delete(TRANSLATION_API_KEY)
+    return translationConfigView()
+  })
+
+  ipcMain.handle("translation:get-state", (_event, rawInput: { identity?: unknown; content?: unknown }) => {
+    ensureStores()
+    const identity = validateTranslationIdentity(rawInput?.identity)
+    const content = validateTranslationContent(String(rawInput?.content ?? ""))
+    const sourceHash = buildTranslationSourceHash(content)
+    const preference = translationCacheStore.getPreference(identity)
+
+    if (preference?.sourceHash === sourceHash) {
+      const cached = translationCacheStore.get(preference.cacheKey)
+      if (cached) {
+        return {
+          content: cached,
+          cacheKey: preference.cacheKey,
+          showTranslation: preference.showTranslation,
+        }
+      }
+    }
+
+    const cacheKey = buildTranslationCacheKey(readTranslationConfig(), content)
+    const cached = translationCacheStore.get(cacheKey)
+    if (!cached) return null
+    return { content: cached, cacheKey, showTranslation: true }
+  })
+
+  ipcMain.handle("translation:list-views", () => {
+    ensureStores()
+    return translationCacheStore.listPreferences()
+  })
+
+  ipcMain.handle("translation:set-view", (_event, rawInput: TranslationViewInput) => {
+    ensureStores()
+    const identity = validateTranslationIdentity(rawInput?.identity)
+    const content = validateTranslationContent(String(rawInput?.content ?? ""))
+    const cacheKey = validateTranslationCacheKey(rawInput?.cacheKey)
+    if (!translationCacheStore.get(cacheKey)) {
+      throw new Error("译文缓存已失效，请重新翻译")
+    }
+    const preference = {
+      identity,
+      cacheKey,
+      sourceHash: buildTranslationSourceHash(content),
+      sourceDescription: normalizeTranslationDescription(rawInput?.sourceDescription),
+      translatedDescription: normalizeTranslationDescription(rawInput?.translatedDescription),
+      showTranslation: Boolean(rawInput?.showTranslation),
+    }
+    translationCacheStore.setPreference(preference)
+    return preference
+  })
+
+  ipcMain.handle("translation:translate", async (_event, rawContent: string) => {
+    ensureStores()
+    const content = validateTranslationContent(rawContent)
+    const config = readTranslationConfig()
+    const apiKey = readTranslationApiKey()
+    if (!apiKey) {
+      throw new Error("未配置大模型 API")
+    }
+
+    const cacheKey = buildTranslationCacheKey(config, content)
+    const cached = translationCacheStore.get(cacheKey)
+    if (cached) {
+      return { content: cached, cached: true, cacheKey }
+    }
+    if (translationInFlight) {
+      throw new Error("已有一个 Skill 正在翻译，请等它完成后再试")
+    }
+
+    translationInFlight = true
+    try {
+      const result = await requestTranslation(config, apiKey, content)
+      translationCacheStore.set(cacheKey, result.content)
+      const currentUsage = settingsStore.get<TranslationUsage | null>(TRANSLATION_USAGE_KEY, null)
+      settingsStore.set(
+        TRANSLATION_USAGE_KEY,
+        recordTranslationUsage(currentUsage, result.usage),
+      )
+      return {
+        content: result.content,
+        cached: false,
+        cacheKey,
+        usage: result.usage,
+      }
+    } finally {
+      translationInFlight = false
+    }
   })
 
   // -------------------------------------------------------------------------
@@ -3178,7 +4089,7 @@ Add your skill instructions here.
           { headers: { Accept: "application/vnd.github+json" } },
         )
         if (!res.ok) throw new Error(`GitHub API HTTP ${res.status}`)
-        const data = await res.json()
+        const data = (await res.json()) as Record<string, unknown>
         return {
           version: String(data.tag_name ?? "").replace(/^(desktop-v|v)/, ""),
           name: String(data.name ?? data.tag_name ?? ""),
@@ -3202,6 +4113,7 @@ Add your skill instructions here.
 
   // Write skill content back to disk
   ipcMain.handle("skill:write-content", async (_, filePath: string, content: string) => {
+    assertSkillStorageReady()
     // Validate the path is within allowed skill directories
     const resolved = path.resolve(filePath)
     if (!isSkillPathAllowed(resolved)) {
@@ -3209,7 +4121,18 @@ Add your skill instructions here.
     }
 
     try {
+      const skillPath = path.dirname(resolved)
+      const parsed = await parseSkillMd(resolved)
+      const skillName = parsed?.name || path.basename(skillPath)
+      const previousContent = await fs.readFile(resolved)
+      await saveSkillVersion(skillPath, skillName, "initial")
       await fs.writeFile(resolved, content, "utf-8")
+      try {
+        await saveSkillVersion(skillPath, skillName, "edit")
+      } catch (error) {
+        await fs.writeFile(resolved, previousContent)
+        throw error
+      }
     } catch (err) {
       throw new Error(`Failed to save: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -3227,6 +4150,7 @@ Add your skill instructions here.
 
   // Disable a skill for one agent. Modified physical copies are detached and restored on re-enable.
   ipcMain.handle("skills:remove-from-agent", async (_, input: SkillRemovalRequest, agentName: string) => {
+    assertSkillStorageReady()
     const agent = agentRegistry[agentName]
     if (!agent) throw new Error(`Unknown agent: ${agentName}`)
     if (pathsEqual(agent.globalSkillsDir, CANONICAL_SKILLS_DIR)) {
@@ -3238,11 +4162,11 @@ Add your skill instructions here.
       for (const binding of resolved.bindings) {
         const { skillPath, folderName } = binding
         const masterTarget = resolved.request.targets
+          .filter((target) => target.scope === "global")
           .flatMap((target) => [target.path, target.canonicalPath])
           .map((targetPath) => path.resolve(targetPath))
           .find((targetPath) =>
-            isPathInside(CANONICAL_SKILLS_DIR, targetPath) &&
-            pathsEqual(path.basename(targetPath), folderName),
+            getSkillStorageRoots().some((root) => isPathInside(root, targetPath)),
           )
         const canonicalDir = masterTarget ?? path.join(CANONICAL_SKILLS_DIR, folderName)
         if (pathsEqual(skillPath, canonicalDir)) {
@@ -3289,6 +4213,7 @@ Add your skill instructions here.
   ipcMain.handle(
     "skills:add-to-agent",
     async (_event, skillName: string, canonicalPath: string, agentName: string) => {
+      assertSkillStorageReady()
       const agent = agentRegistry[agentName]
       if (!agent) throw new Error(`Unknown agent: ${agentName}`)
 
@@ -3307,7 +4232,9 @@ Add your skill instructions here.
       }
 
       const folderName = getSkillFolderName(sourceDir, skillName)
+      ensureStores()
       if (await restoreDetachedAgentCopy(folderName, agent)) {
+        activityStore.add("skill", `将 ${skillName} 适配到 ${agent.displayName}`)
         return { restoredDetachedCopy: true }
       }
 
@@ -3315,12 +4242,14 @@ Add your skill instructions here.
       if (!result.success) {
         throw new Error(result.error || "Failed to add skill to target agent")
       }
+      activityStore.add("skill", `将 ${skillName} 适配到 ${agent.displayName}`)
     },
   )
 
   ipcMain.handle(
     "skills:sync-agent-copy-to-master",
-    async (_event, skillName: string, agentName: string, agentPath: string) => {
+    async (_event, skillName: string, masterPath: string, agentName: string, agentPath: string) => {
+      assertSkillStorageReady()
       const agent = agentRegistry[agentName]
       if (!agent) {
         throw new Error(`Unknown agent: ${agentName}`)
@@ -3332,16 +4261,128 @@ Add your skill instructions here.
       ) {
         throw new Error("独立副本路径无效或不在已授权的扫描目录中")
       }
-      const folderName = assertSafePathSegment(path.basename(resolvedAgentPath))
-      return syncAgentCopyToMaster({
+      const resolvedMasterPath = path.resolve(masterPath)
+      if (
+        !getSkillStorageRoots().some((root) => isPathInside(root, resolvedMasterPath)) ||
+        !(await fileExists(path.join(resolvedMasterPath, "SKILL.md")))
+      ) {
+        throw new Error("母版路径无效或不在通用 Skill 目录中")
+      }
+      const parsedMaster = await parseSkillMd(path.join(resolvedMasterPath, "SKILL.md"))
+      if ((parsedMaster?.name || path.basename(resolvedMasterPath)).trim().toLowerCase() !== skillName.trim().toLowerCase()) {
+        throw new Error("母版名称与待同步 Skill 不一致")
+      }
+      const versionWarnings: string[] = []
+      try {
+        await saveSkillVersion(resolvedMasterPath, skillName, "initial")
+      } catch (error) {
+        versionWarnings.push("同步前版本未保存")
+        console.warn("Failed to save skill version before sync:", error)
+      }
+      const result = await syncAgentCopyToMaster({
         skillName,
         agentName: agent.name,
-        masterPath: path.join(CANONICAL_SKILLS_DIR, folderName),
+        masterPath: resolvedMasterPath,
         agentPath: resolvedAgentPath,
         backupRoot: SKILLBOX_BACKUPS_DIR,
       })
+      try {
+        await saveSkillVersion(resolvedMasterPath, skillName, "edit")
+      } catch (error) {
+        versionWarnings.push("同步后版本未保存")
+        console.warn("Failed to save skill version after sync:", error)
+      }
+      return { ...result, warning: versionWarnings.join("；") || undefined }
     },
   )
+
+  // ---------------------------------------------------------------------
+  // MCP library
+  // ---------------------------------------------------------------------
+
+  const broadcastMcpUpdated = async (): Promise<void> => {
+    const library = await scanMcpLibrary()
+    noteSkillboxMcpWrite(library)
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send("mcp:updated", library)
+      }
+    }
+  }
+
+  ipcMain.handle("mcp:list-library", async () => {
+    return scanMcpLibrary()
+  })
+
+  ipcMain.handle(
+    "mcp:set-connection",
+    async (
+      _event,
+      serverName: string,
+      agentId: string,
+      enable: boolean,
+      sourceAgentId?: string,
+    ) => {
+      const result = await setMcpConnection(serverName, agentId, enable, sourceAgentId)
+      if (result.ok || result.written.length > 0) {
+        ensureStores()
+        const label = mcpAgentRegistry.find((a) => a.id === agentId)?.displayName ?? agentId
+        activityStore.add("mcp", enable ? `将 ${serverName} 接入 ${label}` : `从 ${label} 断开 ${serverName}`)
+        await broadcastMcpUpdated()
+      }
+      return result
+    },
+  )
+
+  ipcMain.handle(
+    "mcp:sync-server",
+    async (_event, serverName: string, sourceAgentId: string, targetAgentIds: string[]) => {
+      const result = await syncMcpServer(serverName, sourceAgentId, targetAgentIds)
+      if (result.ok || result.written.length > 0) {
+        ensureStores()
+        activityStore.add(
+          "mcp",
+          result.ok
+            ? `${serverName} 的 MCP 配置已同步到 ${result.written.length} 个 agent`
+            : `${serverName} 的 MCP 配置部分写入（${result.written.length} 个 agent）：${result.error ?? "仍有目标未完成"}`,
+        )
+        await broadcastMcpUpdated()
+      }
+      return result
+    },
+  )
+
+  ipcMain.handle(
+    "mcp:add-server",
+    async (_event, input: McpServerInput, agentIds: string[]) => {
+      const result = await addMcpServer(input, agentIds)
+      if (result.ok || result.written.length > 0) {
+        ensureStores()
+        activityStore.add("mcp", `新增 MCP server: ${input.name} · 写入 ${result.written.length} 个 agent`)
+        await broadcastMcpUpdated()
+      }
+      return result
+    },
+  )
+
+  ipcMain.handle("mcp:remove-server", async (_event, serverName: string) => {
+    const result = await removeMcpServer(serverName)
+    if (result.ok || result.written.length > 0) {
+      ensureStores()
+      activityStore.add("mcp", `移除 MCP server: ${serverName}`)
+      await broadcastMcpUpdated()
+    }
+    return result
+  })
+
+  ipcMain.handle("mcp:open-config", async (_event, configPath: string) => {
+    return openMcpConfig(configPath)
+  })
+
+  ipcMain.handle("activity:list", (_event, limit?: number) => {
+    ensureStores()
+    return activityStore.list(typeof limit === "number" ? limit : 20)
+  })
 }
 
 // Export for use by file-watcher and main process

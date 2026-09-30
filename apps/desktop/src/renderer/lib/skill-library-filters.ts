@@ -1,10 +1,11 @@
 import { categorizeSkill } from "./skill-category"
+import { getSkillAgentCoverageNames } from "./skill-agent-bindings"
 
 export interface LibraryFilters {
   category: string
   mismatched: boolean
   uncollected: boolean
-  sort: "default" | "name-asc" | "name-desc" | "updated" | "installed" | "favorites"
+  sort: "default" | "name-asc" | "name-desc" | "updated" | "installed" | "coverage" | "favorites"
 }
 
 export const DEFAULT_LIBRARY_FILTERS: LibraryFilters = {
@@ -28,9 +29,18 @@ export function refineLibrarySkills(
   switch (filters.sort) {
     case "name-asc": return result.sort(byName)
     case "name-desc": return result.sort((a, b) => byName(b, a))
-    case "updated": return result.sort((a, b) =>
-      (timestamp(b.updatedAt) || timestamp(b.installedAt)) - (timestamp(a.updatedAt) || timestamp(a.installedAt)) || byName(a, b))
+    case "updated": return result.sort((a, b) => timestamp(b.updatedAt) - timestamp(a.updatedAt) || byName(a, b))
     case "installed": return result.sort((a, b) => timestamp(b.installedAt) - timestamp(a.installedAt) || byName(a, b))
+    case "coverage": {
+      const coverage = new Map(result.map((skill) => {
+        const agents = getSkillAgentCoverageNames(skill).sort((a, b) => a.localeCompare(b, "zh-CN"))
+        return [skill, { count: agents.length, group: agents.join("\0") }]
+      }))
+      return result.sort((a, b) =>
+        coverage.get(b)!.count - coverage.get(a)!.count ||
+        coverage.get(a)!.group.localeCompare(coverage.get(b)!.group, "zh-CN") ||
+        byName(a, b))
+    }
     case "favorites": return result.sort((a, b) => Number(favorites.has(b.name)) - Number(favorites.has(a.name)) || byName(a, b))
     default: return result
   }

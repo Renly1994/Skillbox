@@ -54,7 +54,7 @@ export function LibraryListActions({ skills, value, onChange, onReset, hasOtherF
         )}
         {active && <button className="skillbox-filter-reset" onClick={onReset}>清除筛选</button>}
         <label className="skillbox-sort-control">排序
-          <select aria-label="技能排序" title="时间以安装记录为准；缺失更新时间时使用安装时间，无记录的排在最后" value={value.sort}
+          <select aria-label="技能排序" title="按列表中真实 Agent 数量从多到少，不计通用目录；同一 Agent 组合相邻，再按 Skill 名称排序" value={value.sort}
             onPointerDown={(event) => { event.currentTarget.dataset.pointerFocus = "true" }}
             onKeyDown={(event) => { delete event.currentTarget.dataset.pointerFocus }}
             onBlur={(event) => { delete event.currentTarget.dataset.pointerFocus }}
@@ -63,7 +63,8 @@ export function LibraryListActions({ skills, value, onChange, onReset, hasOtherF
             <option value="name-asc">名称 A → Z</option>
             <option value="name-desc">名称 Z → A</option>
             <option value="updated">最近更新</option>
-            <option value="installed">最近安装</option>
+            <option value="installed">最近添加</option>
+            <option value="coverage">适配数量</option>
             <option value="favorites">收藏优先</option>
           </select>
         </label>

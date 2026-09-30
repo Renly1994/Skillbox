@@ -40,3 +40,10 @@ export function getSkillListAgentNames(skill: SkillAgentBindingSource): string[]
   if (skill.scope !== "global") return Array.from(new Set(skill.agents))
   return getAgentFilterNames(skill)
 }
+
+/** 列表覆盖数统计真实 Agent，不把通用 Skill 目录当成一个 Agent。 */
+export function getSkillAgentCoverageNames(skill: SkillAgentBindingSource): string[] {
+  return getSkillListAgentNames(skill).filter(
+    (agentName) => !UNIVERSAL_AGENT_NAMES.has(agentName),
+  )
+}

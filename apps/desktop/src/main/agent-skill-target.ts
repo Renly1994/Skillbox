@@ -1,3 +1,4 @@
+import crypto from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { compareSkillContents } from "./version-sync"
@@ -5,6 +6,23 @@ import { compareSkillContents } from "./version-sync"
 function comparisonKey(value: string): string {
   const resolved = path.resolve(value)
   return process.platform === "win32" ? resolved.toLowerCase() : resolved
+}
+
+export async function moveAgentSkillDirectory(source: string, destination: string): Promise<void> {
+  try {
+    await fs.rename(source, destination)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error
+    const staging = `${destination}.skillbox-move-${crypto.randomUUID()}`
+    try {
+      await fs.cp(source, staging, { recursive: true })
+      await fs.rename(staging, destination)
+    } catch (copyError) {
+      await fs.rm(staging, { recursive: true, force: true }).catch(() => {})
+      throw copyError
+    }
+    await fs.rm(source, { recursive: true })
+  }
 }
 
 /**

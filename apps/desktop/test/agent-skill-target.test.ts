@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import {
+  moveAgentSkillDirectory,
   prepareAgentSkillTarget,
   selectAgentSkillRemovalCandidates,
 } from "../src/main/agent-skill-target"
@@ -58,6 +59,29 @@ test("适配时归档内容一致的冗余副本", async () => {
     assert.equal(await fs.readFile(path.join(master, "SKILL.md"), "utf8"), "same")
   })
 })
+
+test(
+  "Agent 副本与备份位于不同磁盘时仍可移动",
+  { skip: path.parse(os.homedir()).root.toLowerCase() === path.parse(os.tmpdir()).root.toLowerCase() },
+  async () => {
+    const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "skillbox-agent-move-source-"))
+    const destinationRoot = await fs.mkdtemp(path.join(os.homedir(), ".skillbox-agent-move-target-"))
+    const source = path.join(sourceRoot, "skill")
+    const destination = path.join(destinationRoot, "skill")
+    try {
+      await fs.mkdir(source)
+      await fs.writeFile(path.join(source, "SKILL.md"), "agent copy")
+      await moveAgentSkillDirectory(source, destination)
+      assert.equal(await fs.readFile(path.join(destination, "SKILL.md"), "utf8"), "agent copy")
+      await assert.rejects(fs.stat(source))
+    } finally {
+      await Promise.all([
+        fs.rm(sourceRoot, { recursive: true, force: true }),
+        fs.rm(destinationRoot, { recursive: true, force: true }),
+      ])
+    }
+  },
+)
 
 test("取消适配时同时处理 Agent 的新旧全局目录", () => {
   const matches = [

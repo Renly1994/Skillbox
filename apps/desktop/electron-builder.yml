@@ -1,5 +1,6 @@
-appId: ai.skillsgate.desktop
+appId: ai.skillbox.desktop
 productName: Skillbox
+executableName: SkillboxApp
 directories:
   output: release
   buildResources: resources
@@ -12,6 +13,11 @@ files:
   - node_modules/bindings/**/*
   - node_modules/file-uri-to-path/**/*
   - node_modules/prebuild-install/**/*
+extraResources:
+  - from: resources/icon.png
+    to: icon.png
+  - from: resources/icon.ico
+    to: icon.ico
 npmRebuild: true
 asarUnpack:
   - "**/*.node"
@@ -36,9 +42,11 @@ win:
   target: nsis
 
 nsis:
+  guid: 123a0f9b-e728-5938-995d-f0f4ed1a37b3
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
+  shortcutName: Skillbox
   installerIcon: resources/icon.ico
   uninstallerIcon: resources/icon.ico
   installerHeaderIcon: resources/icon.ico

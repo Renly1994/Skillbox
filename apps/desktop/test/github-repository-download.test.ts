@@ -31,13 +31,16 @@ function createRepositoryArchive(): Buffer {
 test("应用异常退出后会清理上次未完成的市场下载", async () => {
   await withTempDirectory(async (root) => {
     const stale = path.join(root, "skillsgate-1788254552151-fd526f39")
+    const current = path.join(root, "skillbox-1788254552151-fd526f39")
     const unrelated = path.join(root, "skillbox-user-data")
     await fs.mkdir(stale)
+    await fs.mkdir(current)
     await fs.mkdir(unrelated)
 
     await cleanupMarketplaceTempDirectories(root)
 
     await assert.rejects(fs.access(stale))
+    await assert.rejects(fs.access(current))
     await fs.access(unrelated)
   })
 })

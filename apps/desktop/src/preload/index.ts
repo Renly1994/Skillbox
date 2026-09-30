@@ -49,6 +49,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   searchCatalog: (query: string, limit?: number, offset?: number) =>
     ipcRenderer.invoke("skills:search-catalog", query, limit, offset),
   fetchTrending: () => ipcRenderer.invoke("skills:fetch-trending"),
+  fetchSkillSummary: (source: string, skillId: string) =>
+    ipcRenderer.invoke("skills:fetch-summary", source, skillId),
   fetchSkillContent: (source: string, skillId: string) =>
     ipcRenderer.invoke("skills:fetch-content", source, skillId),
   createSkill: (data: {
@@ -66,7 +68,38 @@ contextBridge.exposeInMainWorld("electronAPI", {
       projectName?: string | null
     }>
   }) => ipcRenderer.invoke("skills:remove", request),
-  updateSkill: (name: string) => ipcRenderer.invoke("skills:update", name),
+  linkSkillSources: (skills: Array<{ name: string; canonicalPath: string; source: string }>) =>
+    ipcRenderer.invoke("skills:link-sources", { skills }),
+  chooseSkillSourceDirectory: () => ipcRenderer.invoke("skills:choose-source-directory"),
+  listLinkedSkillSources: (skills: Array<{ name: string; canonicalPath: string }>) =>
+    ipcRenderer.invoke("skills:list-linked-sources", skills),
+  checkSkillUpdate: (skill: { name: string; canonicalPath: string }) =>
+    ipcRenderer.invoke("skills:check-update", skill),
+  updateSkill: (skill: { name: string; canonicalPath: string }) =>
+    ipcRenderer.invoke("skills:update", skill),
+  listSkillVersions: (skill: { name: string; canonicalPath: string }) =>
+    ipcRenderer.invoke("skill-versions:list", skill),
+  createSkillVersion: (
+    skill: { name: string; canonicalPath: string },
+    reason: "initial" | "edit" | "update" | "restore" | "manual" = "manual",
+  ) => ipcRenderer.invoke("skill-versions:create", skill, reason),
+  readSkillVersionFile: (
+    skill: { name: string; canonicalPath: string },
+    versionId: string,
+    relativePath?: string,
+  ) => ipcRenderer.invoke("skill-versions:read-file", skill, versionId, relativePath),
+  restoreSkillVersion: (
+    skill: { name: string; canonicalPath: string },
+    versionId: string,
+  ) => ipcRenderer.invoke("skill-versions:restore", skill, versionId),
+  skillVersionStorageInfo: () => ipcRenderer.invoke("skill-versions:storage-info"),
+  chooseSkillVersionStorage: () => ipcRenderer.invoke("skill-versions:choose-storage"),
+  setSkillVersionRetention: (value: number) =>
+    ipcRenderer.invoke("skill-versions:set-retention", value),
+  openSkillVersionStorage: () => ipcRenderer.invoke("skill-versions:open-storage"),
+  skillStorageInfo: () => ipcRenderer.invoke("skill-storage:info"),
+  chooseSkillStorage: () => ipcRenderer.invoke("skill-storage:choose"),
+  openSkillStorage: () => ipcRenderer.invoke("skill-storage:open"),
   readSkillContent: (skillPath: string) =>
     ipcRenderer.invoke("skill:read-content", skillPath),
   listSupportingFiles: (skillPath: string) =>
@@ -89,8 +122,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("skills:remove-from-agent", request, agentName),
   addToAgent: (skillName: string, canonicalPath: string, agentName: string) =>
     ipcRenderer.invoke("skills:add-to-agent", skillName, canonicalPath, agentName),
-  syncAgentCopyToMaster: (skillName: string, agentName: string, agentPath: string) =>
-    ipcRenderer.invoke("skills:sync-agent-copy-to-master", skillName, agentName, agentPath),
+  syncAgentCopyToMaster: (skillName: string, masterPath: string, agentName: string, agentPath: string) =>
+    ipcRenderer.invoke("skills:sync-agent-copy-to-master", skillName, masterPath, agentName, agentPath),
 
   // Remote servers
   serversList: () => ipcRenderer.invoke("servers:list"),
@@ -135,6 +168,32 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("settings:set", key, value),
   settingsAll: () => ipcRenderer.invoke("settings:all"),
 
+  // Translation
+  translationGetConfig: () => ipcRenderer.invoke("translation:get-config"),
+  translationRevealApiKey: () => ipcRenderer.invoke("translation:reveal-api-key"),
+  translationSaveConfig: (config: {
+    preset: "deepseek" | "openai" | "anthropic" | "custom"
+    name: string
+    baseUrl: string
+    apiFormat: "openai-chat" | "anthropic-messages"
+    model: string
+    apiKey?: string
+  }) => ipcRenderer.invoke("translation:save-config", config),
+  translationClearConfig: () => ipcRenderer.invoke("translation:clear-config"),
+  translationGetState: (input: { identity: string; content: string }) =>
+    ipcRenderer.invoke("translation:get-state", input),
+  translationListViews: () => ipcRenderer.invoke("translation:list-views"),
+  translationSetView: (input: {
+    identity: string
+    content: string
+    cacheKey: string
+    sourceDescription?: string | null
+    translatedDescription?: string | null
+    showTranslation: boolean
+  }) => ipcRenderer.invoke("translation:set-view", input),
+  translateSkillContent: (content: string) =>
+    ipcRenderer.invoke("translation:translate", content),
+
   // Favorites
   favoritesList: () => ipcRenderer.invoke("favorites:list"),
   favoritesToggle: (name: string) =>
@@ -149,6 +208,29 @@ contextBridge.exposeInMainWorld("electronAPI", {
   updatesInstall: () => ipcRenderer.invoke("updates:install"),
   updatesReleaseNotes: () => ipcRenderer.invoke("updates:release-notes"),
   appGetVersion: () => ipcRenderer.invoke("app:get-version"),
+
+  // MCP library
+  mcpListLibrary: () => ipcRenderer.invoke("mcp:list-library"),
+  mcpSetConnection: (
+    serverName: string,
+    agentId: string,
+    enable: boolean,
+    sourceAgentId?: string,
+  ) => ipcRenderer.invoke("mcp:set-connection", serverName, agentId, enable, sourceAgentId),
+  mcpSyncServer: (
+    serverName: string,
+    sourceAgentId: string,
+    targetAgentIds: string[],
+  ) => ipcRenderer.invoke("mcp:sync-server", serverName, sourceAgentId, targetAgentIds),
+  mcpAddServer: (input: unknown, agentIds: string[]) =>
+    ipcRenderer.invoke("mcp:add-server", input, agentIds),
+  mcpRemoveServer: (serverName: string) =>
+    ipcRenderer.invoke("mcp:remove-server", serverName),
+  mcpOpenConfig: (configPath: string) =>
+    ipcRenderer.invoke("mcp:open-config", configPath),
+
+  // Activity log
+  activityList: (limit?: number) => ipcRenderer.invoke("activity:list", limit),
 
   // Events
   onSkillsUpdated: (callback: (skills: unknown[]) => void) => {
@@ -165,5 +247,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   onUpdateState: (callback: (state: unknown) => void) => {
     return subscribe("updates:state", callback)
+  },
+  onMcpUpdated: (callback: (library: unknown) => void) => {
+    return subscribe("mcp:updated", callback)
   },
 })

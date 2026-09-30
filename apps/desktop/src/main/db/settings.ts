@@ -31,6 +31,10 @@ export class SettingsStore {
       .run(key, JSON.stringify(value))
   }
 
+  delete(key: string): void {
+    this.db.prepare("DELETE FROM settings WHERE key = ?").run(key)
+  }
+
   getAll(): Record<string, unknown> {
     const rows = this.db
       .prepare("SELECT key, value FROM settings")

@@ -2,7 +2,7 @@ import crypto from "node:crypto"
 import type { RemoteServer, ScannedRemoteSkill } from "../types.js"
 import { sshExec } from "./client.js"
 
-const DELIMITER_PREFIX = "---SKILLSGATE_DELIM:"
+const DELIMITER_PREFIX = "---SKILLBOX_DELIM:"
 const DELIMITER_SUFFIX = "---"
 
 /**

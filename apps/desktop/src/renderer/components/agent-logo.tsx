@@ -11,6 +11,7 @@ import continueLogo from "../assets/agent-logos/color/continue.png"
 import copilotLogo from "../assets/agent-logos/color/github-copilot.png"
 import cursorLogo from "../assets/agent-logos/color/cursor.png"
 import deepseekLogo from "../assets/agent-logos/color/deepseek-harness.png"
+import doubaoWorkLogo from "../assets/agent-logos/color/doubao-work.png"
 import droidCliLogo from "../assets/agent-logos/color/droid-cli.png"
 import gooseLogo from "../assets/agent-logos/color/goose.png"
 import geminiCliLogo from "../assets/agent-logos/color/gemini-cli.svg"
@@ -62,6 +63,7 @@ const AGENT_LOGOS: Record<string, string> = {
   "qwen-code": qwenCodeLogo,
   zcode: zcodeLogo,
   workbuddy: workbuddyLogo,
+  "doubao-work": doubaoWorkLogo,
   "kimi-code": kimiLogo,
   "deepseek-harness": deepseekLogo,
   qoderwork: qoderWorkLogo,
@@ -92,12 +94,15 @@ const DISPLAY_NAME_TO_KEY: Record<string, string> = {
   "Claude Code": "claude-code",
   Cursor: "cursor",
   "GitHub Copilot": "github-copilot",
+  "Copilot CLI": "github-copilot",
+  "VS Code (Copilot)": "github-copilot",
   Windsurf: "windsurf",
   Cline: "cline",
   Continue: "continue",
   "Codex CLI": "codex-cli",
   CodeArts: "codearts",
   CodeBuddy: "codebuddy",
+  "CodeBuddy CLI": "codebuddy",
   Comate: "comate",
   "Gemini CLI": "gemini-cli",
   Hermes: "hermes-agent",
@@ -108,6 +113,7 @@ const DISPLAY_NAME_TO_KEY: Record<string, string> = {
   "Qwen Code": "qwen-code",
   ZCode: "zcode",
   WorkBuddy: "workbuddy",
+  豆包工作: "doubao-work",
   "Kimi Code": "kimi-code",
   "DeepSeek Harness": "deepseek-harness",
   QoderWork: "qoderwork",

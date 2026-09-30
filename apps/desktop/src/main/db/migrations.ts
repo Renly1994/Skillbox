@@ -107,6 +107,53 @@ const MIGRATIONS: Migration[] = [
       INSERT OR IGNORE INTO schema_version VALUES (5);
     `,
   },
+  {
+    version: 6,
+    up: `
+      CREATE TABLE IF NOT EXISTS translation_cache (
+        cache_key TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        accessed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_translation_cache_accessed
+      ON translation_cache(accessed_at);
+
+      INSERT OR IGNORE INTO schema_version VALUES (6);
+    `,
+  },
+  {
+    version: 7,
+    up: `
+      CREATE TABLE IF NOT EXISTS translation_preferences (
+        identity TEXT PRIMARY KEY,
+        cache_key TEXT NOT NULL REFERENCES translation_cache(cache_key) ON DELETE CASCADE,
+        source_hash TEXT NOT NULL,
+        source_description TEXT,
+        translated_description TEXT,
+        show_translation INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      INSERT OR IGNORE INTO schema_version VALUES (7);
+    `,
+  },
+  {
+    version: 8,
+    up: `
+      CREATE TABLE IF NOT EXISTS activity (
+        id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts      TEXT NOT NULL,
+        kind    TEXT NOT NULL,
+        message TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity(ts);
+
+      INSERT OR IGNORE INTO schema_version VALUES (8);
+    `,
+  },
 ]
 
 function getCurrentVersion(db: Database.Database): number {

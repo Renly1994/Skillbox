@@ -14,6 +14,14 @@ const factoryHome = process.env.FACTORY_HOME || path.join(home, ".factory");
 const ob1Home = process.env.OB1_HOME || path.join(home, ".ob1");
 const kimiCodeHome = process.env.KIMI_CODE_HOME || path.join(home, ".kimi-code");
 const dshHome = process.env.DSH_HOME || path.join(home, ".dsh");
+const doubaoWorkHome = process.platform === "win32"
+  ? path.join(process.env.LOCALAPPDATA || path.join(home, "AppData", "Local"), "DoubaoWork", "User Data")
+  : process.platform === "darwin"
+    ? path.join(home, "Library", "Application Support", "DoubaoWork")
+    : path.join(home, ".super_doubao", "super-doubao-runtime", "workspace");
+const doubaoWorkSkillsDir = process.platform === "linux"
+  ? path.join(doubaoWorkHome, ".user_skills")
+  : path.join(doubaoWorkHome, "Default", ".doubaowork", "agent_mode", "workspace", ".user_skills");
 
 async function dirExists(p: string): Promise<boolean> {
   try {
@@ -230,6 +238,14 @@ export const agents: Record<string, AgentConfig> = {
     skillsDir: ".workbuddy/skills",
     globalSkillsDir: path.join(home, ".workbuddy", "skills"),
     detectInstalled: async () => dirExists(path.join(home, ".workbuddy")),
+  },
+
+  "doubao-work": {
+    name: "doubao-work",
+    displayName: "豆包工作",
+    skillsDir: ".agents/skills",
+    globalSkillsDir: doubaoWorkSkillsDir,
+    detectInstalled: async () => dirExists(doubaoWorkHome),
   },
 
   "kimi-code": {

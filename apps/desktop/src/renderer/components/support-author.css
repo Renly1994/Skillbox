@@ -1,0 +1,113 @@
+.skillbox-support-button {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	width: 100%;
+	min-height: 44px;
+	padding: 0 11px;
+	border: 1px solid var(--border-strong);
+	border-radius: 10px;
+	background: var(--surface);
+	color: var(--foreground);
+	font: 650 12px var(--font-sans);
+	text-align: left;
+	cursor: pointer;
+}
+
+.skillbox-support-button > span { flex: 1; white-space: nowrap; }
+.skillbox-market-area > .skillbox-support-button { margin-top: 8px; }
+.skillbox-support-after-success { width: 100%; margin: 14px 0 12px; padding-top: 13px; border-top: 1px solid var(--border); }
+.skillbox-mcp-toast .skillbox-support-button > span { color: var(--foreground); font-size: 12px; }
+.skillbox-support-heart { width: 16px; height: 16px; flex: none; color: var(--accent); transform-origin: center; }
+.skillbox-support-cup { width: 21px; height: 21px; flex: none; color: var(--muted); }
+.skillbox-support-cup__body { transform-box: fill-box; transform-origin: center bottom; }
+.skillbox-support-cup__heart { fill: var(--accent); stroke: var(--accent); stroke-width: .35; transform-box: fill-box; transform-origin: center; }
+
+@media (hover: hover) {
+	.skillbox-support-button:hover { border-color: var(--accent); background: var(--accent-soft); }
+	.skillbox-support-button:hover .skillbox-support-heart { animation: support-heart-beat .62s ease-in-out both; }
+	.skillbox-support-button:hover .skillbox-support-cup__body { animation: support-cup-hop .76s ease-in-out .04s both; }
+	.skillbox-support-button:hover .skillbox-support-cup__heart { animation: support-cup-heart-pop .76s ease-in-out .09s both; }
+}
+
+.skillbox-support-button:active { background: var(--surface-hover); }
+.skillbox-support-button:focus-visible,
+.skillbox-support-dialog__close:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+@keyframes support-heart-beat {
+	0%, 100% { transform: scale(1); }
+	18% { transform: scale(.94); }
+	39% { transform: scale(1.17); }
+	60% { transform: scale(.98); }
+	78% { transform: scale(1.08); }
+}
+
+@keyframes support-cup-hop {
+	0%, 100% { transform: translateY(0) scaleY(1); }
+	17% { transform: translateY(.45px) scaleY(.97); }
+	43% { transform: translateY(-3.2px) scaleY(1.03); }
+	57% { transform: translateY(-3.5px) scaleY(1); }
+	77% { transform: translateY(.35px) scaleY(.97); }
+	88% { transform: translateY(-.55px) scaleY(1); }
+}
+
+@keyframes support-cup-heart-pop {
+	0%, 100% { transform: translateY(0) scale(1); }
+	20% { transform: translateY(.3px) scale(1.08,.9); }
+	46% { transform: translateY(-1.7px) scale(.96,1.1); }
+	66% { transform: translateY(-1px) rotate(-6deg) scale(1.04); }
+	82% { transform: translateY(.2px) scale(1.04,.94); }
+}
+
+.skillbox-support-dialog {
+	width: min(640px, calc(100vw - 32px));
+	max-width: none;
+	max-height: calc(100dvh - 32px);
+	margin: auto;
+	padding: 0;
+	border: 1px solid var(--border-strong);
+	border-radius: 16px;
+	background: var(--surface);
+	color: var(--foreground);
+	box-shadow: var(--shadow-lg);
+}
+
+.skillbox-support-dialog::backdrop { background: rgb(21 18 14 / .5); backdrop-filter: blur(2px); }
+.skillbox-support-dialog__content { position: relative; padding: 24px 27px 22px; }
+.skillbox-support-dialog__close { position: absolute; top: 13px; right: 15px; width: 32px; height: 32px; border-radius: 8px; color: var(--muted); font-size: 21px; cursor: pointer; }
+.skillbox-support-dialog__close:hover { background: var(--surface-hover); }
+.skillbox-support-dialog__header { display: flex; align-items: center; gap: 12px; padding-right: 22px; }
+.skillbox-support-dialog__icon { display: grid; place-items: center; width: 39px; height: 39px; flex: none; border-radius: 10px; background: var(--accent-soft); }
+.skillbox-support-dialog__icon .skillbox-support-cup { width: 23px; height: 23px; }
+.skillbox-support-dialog__header p { margin: 0 0 4px; color: var(--accent); font-size: 9px; font-weight: 700; letter-spacing: .08em; }
+.skillbox-support-dialog__header h2 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -.035em; }
+.skillbox-support-dialog__copy { margin: 19px 0; color: var(--muted); font-size: 12px; line-height: 1.75; }
+.skillbox-support-dialog__copy p { margin: 0; }
+.skillbox-support-dialog__copy p + p { margin-top: 8px; }
+.skillbox-support-dialog__copy strong { color: var(--foreground); font-weight: 700; }
+.skillbox-support-payments { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+.skillbox-support-payment { --payment-color: #05c160; padding: 0 13px 13px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--payment-color) 42%, transparent); border-radius: 11px; background: var(--surface); text-align: center; }
+.skillbox-support-payment.is-alipay { --payment-color: #1678ff; }
+.skillbox-support-payment h3 { display: flex; align-items: center; justify-content: center; height: 43px; margin: 0 -13px 13px; background: var(--payment-color); color: var(--accent-contrast); font-size: 13px; font-weight: 700; }
+.skillbox-support-qr { position: relative; width: min(230px, 100%); aspect-ratio: 1; margin: auto; overflow: hidden; border: 1px solid var(--border); border-radius: 5px; background: #fff; }
+.skillbox-support-qr img { position: absolute; display: block; height: auto; max-width: none; }
+.is-wechat .skillbox-support-qr img { width: 206.522%; left: -53.478%; top: -60%; }
+.is-alipay .skillbox-support-qr img { width: 137.391%; left: -18.696%; top: -69.13%; }
+.is-alipay .skillbox-support-qr::before,
+.is-alipay .skillbox-support-qr::after { content: ""; position: absolute; z-index: 1; left: 0; right: 0; background: #fff; }
+.is-alipay .skillbox-support-qr::before { top: 0; height: 5.217%; }
+.is-alipay .skillbox-support-qr::after { bottom: 0; height: 6.956%; }
+.skillbox-support-payment p { margin: 10px 0 0; color: var(--muted); font-size: 10px; }
+.skillbox-support-dialog__footer { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; margin: 15px 0 0; color: var(--muted); font-size: 10px; }
+.skillbox-support-dialog__footer span { opacity: .5; }
+
+@media (max-width: 540px) {
+	.skillbox-support-dialog__content { padding: 22px 19px; }
+	.skillbox-support-payments { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.skillbox-support-button:hover .skillbox-support-heart,
+	.skillbox-support-button:hover .skillbox-support-cup__body,
+	.skillbox-support-button:hover .skillbox-support-cup__heart { animation: none; }
+}

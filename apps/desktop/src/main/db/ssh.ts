@@ -180,7 +180,7 @@ function shellQuotePath(remotePath: string): string {
   return `'${expanded.replace(/'/g, "'\\''")}'`
 }
 
-const DELIMITER_PREFIX = "---SKILLSGATE_DELIM:"
+const DELIMITER_PREFIX = "---SKILLBOX_DELIM:"
 const DELIMITER_SUFFIX = "---"
 
 function parseFrontmatter(content: string): {

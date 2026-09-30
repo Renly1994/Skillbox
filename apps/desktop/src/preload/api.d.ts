@@ -36,6 +36,7 @@ declare global {
     }>
     source?: string
     sourceType?: string
+    hasLinkedSource?: boolean
     installedAt?: string
     updatedAt?: string
   }
@@ -46,6 +47,45 @@ declare global {
     success: boolean
     path: string
     error?: string
+  }
+
+  interface SkillVersionChange {
+    relativePath: string
+    kind: "added" | "modified" | "removed"
+  }
+
+  interface SkillVersionEntry {
+    id: string
+    number: number
+    createdAt: string
+    reason: "initial" | "edit" | "update" | "restore" | "manual"
+    fingerprint: string
+    archiveSize: number
+    fileCount: number
+    changes: SkillVersionChange[]
+  }
+
+  interface SkillVersionStorageInfo {
+    path: string
+    versionCount: number
+    sizeBytes: number
+    maxVersionsPerSkill: number
+  }
+
+  interface SkillStorageInfo {
+    path: string
+    compatibilityPath: string
+    isLinked: boolean
+    warning?: string
+  }
+
+  interface SkillUpdateCheck {
+    available: boolean
+    source: string
+    changes: Array<{
+      relativePath: string
+      kind: "modified" | "only-agent" | "only-master"
+    }>
   }
 
   interface SkillLocation {
@@ -174,6 +214,130 @@ declare global {
     message: string
   }
 
+  type TranslationProviderPreset = "deepseek" | "openai" | "anthropic" | "custom"
+  type TranslationApiFormat = "openai-chat" | "anthropic-messages"
+
+  interface TranslationConfigInput {
+    preset: TranslationProviderPreset
+    name: string
+    baseUrl: string
+    apiFormat: TranslationApiFormat
+    model: string
+    apiKey?: string
+  }
+
+  interface TranslationConfigView extends Omit<TranslationConfigInput, "apiKey"> {
+    apiKeyConfigured: boolean
+    usage: {
+      requests: number
+      inputTokens: number
+      outputTokens: number
+      totalTokens: number
+    }
+  }
+
+  interface SkillTranslationResult {
+    content: string
+    cached: boolean
+    cacheKey: string
+    usage?: {
+      inputTokens?: number
+      outputTokens?: number
+      totalTokens?: number
+    }
+  }
+
+  interface SkillTranslationPreference {
+    identity: string
+    cacheKey: string
+    sourceHash: string
+    sourceDescription: string | null
+    translatedDescription: string | null
+    showTranslation: boolean
+  }
+
+  interface SkillTranslationState {
+    content: string
+    cacheKey: string
+    showTranslation: boolean
+  }
+
+  // MCP library types
+  type McpServerType = "stdio" | "http"
+  type McpConfigFormat = "json-mcpServers" | "codex-toml" | "opencode-json"
+
+  interface McpAgentInfo {
+    id: string
+    displayName: string
+    shortCode: string
+    configPath: string
+    format: McpConfigFormat
+    installed: boolean
+    configExists: boolean
+    writable: boolean
+    writeStrategy?: "json" | "codex-cli" | "openclaw-cli"
+    parseError?: string
+  }
+
+  interface McpConnection {
+    agentId: string
+    configPath: string
+    type: McpServerType
+    command?: string
+    args?: string[]
+    cwd?: string
+    envKeys?: string[]
+    headerKeys?: string[]
+    url?: string
+    signature: string
+    raw: string
+  }
+
+  interface McpServerEntry {
+    name: string
+    type: McpServerType
+    command?: string
+    args?: string[]
+    cwd?: string
+    url?: string
+    hasEnv: boolean
+    connections: McpConnection[]
+    consistent: boolean
+  }
+
+  interface McpLibrary {
+    servers: McpServerEntry[]
+    agents: McpAgentInfo[]
+    scannedAt: number
+    errors: Array<{ agentId: string; configPath: string; message: string }>
+  }
+
+  interface McpServerInput {
+    name: string
+    type: McpServerType
+    command?: string
+    args?: string[]
+    cwd?: string
+    env?: Record<string, string>
+    url?: string
+    headers?: Record<string, string>
+    transport?: "http" | "sse"
+  }
+
+  interface McpWriteResult {
+    ok: boolean
+    error?: string
+    written: string[]
+    backups: string[]
+  }
+
+  interface ActivityEvent {
+    id: number
+    ts: string
+    kind: string
+    message: string
+  }
+
   interface ElectronAPI {
     setAppLanguage: (locale: "zh-CN" | "en-US") => void
     detectAgents: () => Promise<DetectedAgent[]>
@@ -222,6 +386,10 @@ declare global {
         isOfficial?: boolean
       }[]
     >
+    fetchSkillSummary: (
+      source: string,
+      skillId: string,
+    ) => Promise<string | null>
     fetchSkillContent: (
       source: string,
       skillId: string,
@@ -233,7 +401,50 @@ declare global {
       agentNames?: string[]
     }) => Promise<{ name: string; path: string; targets: string[] }>
     removeSkill: (request: SkillRemovalRequest) => Promise<SkillRemovalResult>
-    updateSkill: (name: string) => Promise<void>
+    linkSkillSources: (
+      skills: Array<{ name: string; canonicalPath: string; source: string }>,
+    ) => Promise<{
+      linked: number
+      errors: Array<{ name: string; canonicalPath: string; message: string }>
+    }>
+    chooseSkillSourceDirectory: () => Promise<string | null>
+    listLinkedSkillSources: (skills: Array<{ name: string; canonicalPath: string }>) =>
+      Promise<Array<{ canonicalPath: string; source: string }>>
+    checkSkillUpdate: (skill: {
+      name: string
+      canonicalPath: string
+    }) => Promise<SkillUpdateCheck>
+    updateSkill: (skill: {
+      name: string
+      canonicalPath: string
+    }) => Promise<{
+      updated: boolean
+      changes: SkillUpdateCheck["changes"]
+    }>
+    listSkillVersions: (skill: {
+      name: string
+      canonicalPath: string
+    }) => Promise<SkillVersionEntry[]>
+    createSkillVersion: (
+      skill: { name: string; canonicalPath: string },
+      reason?: SkillVersionEntry["reason"],
+    ) => Promise<{ created: boolean; version: SkillVersionEntry }>
+    readSkillVersionFile: (
+      skill: { name: string; canonicalPath: string },
+      versionId: string,
+      relativePath?: string,
+    ) => Promise<string | null>
+    restoreSkillVersion: (
+      skill: { name: string; canonicalPath: string },
+      versionId: string,
+    ) => Promise<void>
+    skillVersionStorageInfo: () => Promise<SkillVersionStorageInfo>
+    chooseSkillVersionStorage: () => Promise<SkillVersionStorageInfo | null>
+    setSkillVersionRetention: (value: number) => Promise<SkillVersionStorageInfo>
+    openSkillVersionStorage: () => Promise<void>
+    skillStorageInfo: () => Promise<SkillStorageInfo>
+    chooseSkillStorage: () => Promise<SkillStorageInfo | null>
+    openSkillStorage: () => Promise<void>
     readSkillContent: (path: string) => Promise<string>
     listSupportingFiles: (
       path: string,
@@ -249,11 +460,13 @@ declare global {
     ) => Promise<void>
     syncAgentCopyToMaster: (
       skillName: string,
+      masterPath: string,
       agentName: string,
       agentPath: string,
     ) => Promise<{
       previousMasterBackupPath: string
       sourceCopyBackupPath: string
+      warning?: string
     }>
 
     // Remote servers
@@ -311,6 +524,23 @@ declare global {
     settingsSet: (key: string, value: unknown) => Promise<void>
     settingsAll: () => Promise<Record<string, unknown>>
 
+    // Translation
+    translationGetConfig: () => Promise<TranslationConfigView>
+    translationRevealApiKey: () => Promise<string>
+    translationSaveConfig: (config: TranslationConfigInput) => Promise<TranslationConfigView>
+    translationClearConfig: () => Promise<TranslationConfigView>
+    translationGetState: (input: { identity: string; content: string }) => Promise<SkillTranslationState | null>
+    translationListViews: () => Promise<SkillTranslationPreference[]>
+    translationSetView: (input: {
+      identity: string
+      content: string
+      cacheKey: string
+      sourceDescription?: string | null
+      translatedDescription?: string | null
+      showTranslation: boolean
+    }) => Promise<SkillTranslationPreference>
+    translateSkillContent: (content: string) => Promise<SkillTranslationResult>
+
     // Favorites
     favoritesList: () => Promise<string[]>
     favoritesToggle: (name: string) => Promise<boolean>
@@ -328,6 +558,28 @@ declare global {
       publishedAt: string
     } | null>
     appGetVersion: () => Promise<string>
+
+    // MCP library
+    mcpListLibrary: () => Promise<McpLibrary>
+    mcpSetConnection: (
+      serverName: string,
+      agentId: string,
+      enable: boolean,
+      sourceAgentId?: string,
+    ) => Promise<McpWriteResult>
+    mcpSyncServer: (
+      serverName: string,
+      sourceAgentId: string,
+      targetAgentIds: string[],
+    ) => Promise<McpWriteResult>
+    mcpAddServer: (
+      input: McpServerInput,
+      agentIds: string[],
+    ) => Promise<McpWriteResult>
+    mcpRemoveServer: (serverName: string) => Promise<McpWriteResult>
+    mcpOpenConfig: (configPath: string) => Promise<void>
+    activityList: (limit?: number) => Promise<ActivityEvent[]>
+    onMcpUpdated: (callback: (library: McpLibrary) => void) => () => void
 
     onSkillsUpdated: (
       callback: (skills: InstalledSkill[]) => void,

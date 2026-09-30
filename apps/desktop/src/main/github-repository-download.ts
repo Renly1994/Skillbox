@@ -32,7 +32,7 @@ export async function cleanupMarketplaceTempDirectories(tempRoot: string): Promi
   const entries = await fs.readdir(tempRoot, { withFileTypes: true }).catch(() => [])
   await Promise.all(entries
     .filter((entry) =>
-      entry.isDirectory() && /^skillsgate-\d{10,}-[0-9a-f]{8}$/i.test(entry.name),
+      entry.isDirectory() && /^(?:skillbox|skillsgate)-\d{10,}-[0-9a-f]{8}$/i.test(entry.name),
     )
     .map((entry) =>
       fs.rm(path.join(tempRoot, entry.name), { recursive: true, force: true }),

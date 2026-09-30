@@ -1,3 +1,4 @@
+import fs from "node:fs"
 import path from "node:path"
 
 export type SkillRemovalScope = "global" | "project" | "custom"
@@ -53,6 +54,29 @@ export function isPathInside(rootPath: string, targetPath: string): boolean {
   )
 }
 
+export function resolveSkillRemovalRoots(roots: string[]): string[] {
+  return Array.from(new Set(roots.flatMap((root) => {
+    const resolved = path.resolve(root)
+    try { return [resolved, fs.realpathSync.native(resolved)] }
+    catch { return [resolved] }
+  })))
+}
+
+export function selectAgentSkillRemovalTargets(
+  input: SkillRemovalRequest,
+  agentRoots: string[],
+  masterRoots: string[],
+): SkillRemovalRequest {
+  if (!Array.isArray(input?.targets)) return input
+  const roots = [...agentRoots, ...masterRoots]
+  return {
+    ...input,
+    targets: input.targets.filter((target) =>
+      typeof target?.path === "string" && roots.some((root) => isPathInside(root, target.path)),
+    ),
+  }
+}
+
 export function validateSkillRemovalRequest(
   input: SkillRemovalRequest,
   allowedRoots: string[],
@@ -80,12 +104,10 @@ export function validateSkillRemovalRequest(
     ))) {
       throw new Error("拒绝删除 Skill 根目录")
     }
-    if (
-      !roots.some((root) => isPathInside(root, resolved)) ||
-      !roots.some((root) => isPathInside(root, canonicalPath))
-    ) {
-      throw new Error(`Skill 路径位于授权范围之外：${resolved}`)
-    }
+    const outsidePath = [resolved, canonicalPath].find((candidatePath) =>
+      !roots.some((root) => isPathInside(root, candidatePath)),
+    )
+    if (outsidePath) throw new Error(`Skill 路径位于授权范围之外：${outsidePath}`)
     const key = comparisonKey(resolved)
     if (seen.has(key)) continue
     seen.add(key)

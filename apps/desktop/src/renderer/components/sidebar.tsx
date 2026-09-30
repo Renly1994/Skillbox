@@ -1,6 +1,6 @@
 import { NavLink, useLocation } from "react-router-dom"
 import { useEffect, useMemo, useState } from "react"
-import { ThemeToggle } from "@skillsgate/ui"
+import { ThemeToggle } from "@skillbox/ui"
 import { electronAPI } from "../lib/electron-api"
 
 interface NavItem {
@@ -167,7 +167,7 @@ export function Sidebar() {
   if (isHome) {
     return (
       <aside className="w-14 flex-shrink-0 flex flex-col items-center bg-surface border-r border-border">
-        {/* App icon (SkillsGate logo) */}
+        {/* App icon (Skillbox logo) */}
         <div className="py-4">
           <svg width="24" height="24" viewBox="0 0 64 64" className="text-foreground">
             <g transform="translate(8, 8)">
@@ -225,7 +225,7 @@ export function Sidebar() {
   // Full sidebar for non-Home views
   return (
     <aside className="w-60 flex-shrink-0 flex flex-col bg-surface border-r border-border">
-      {/* App header with SkillsGate logo */}
+      {/* App header with Skillbox logo */}
       <div className="px-4 py-5 border-b border-border">
         <div className="flex items-center gap-2.5">
           <svg width="22" height="22" viewBox="0 0 64 64" className="text-foreground flex-shrink-0">
@@ -238,7 +238,7 @@ export function Sidebar() {
             </g>
           </svg>
           <span className="text-[17px] font-semibold tracking-tight text-foreground">
-            SkillsGate
+            Skillbox
           </span>
         </div>
         <span className="text-xs text-muted mt-1 block">

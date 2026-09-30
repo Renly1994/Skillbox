@@ -3,6 +3,7 @@ import test from "node:test"
 import {
   getAdaptedAgentNames,
   getAgentFilterNames,
+  getSkillAgentCoverageNames,
   getSkillListAgentNames,
 } from "../src/renderer/lib/skill-agent-bindings"
 
@@ -60,4 +61,17 @@ test("直接读取通用目录的 Agent 可筛选，但不显示可取消的适�
 
   assert.deepEqual(getAgentFilterNames(skill), ["Zed", "通用 Skill 目录"])
   assert.deepEqual(getAdaptedAgentNames(skill), [])
+  assert.deepEqual(getSkillAgentCoverageNames(skill), ["Zed"])
+})
+
+test("Agent 覆盖包含项目 Agent，但排除通用目录", () => {
+  const skill = {
+    scope: "project" as const,
+    agents: ["Cursor", "通用 Skill 目录"],
+    locations: [
+      { scope: "project" as const, agents: ["Cursor", "通用 Skill 目录"] },
+    ],
+  }
+
+  assert.deepEqual(getSkillAgentCoverageNames(skill), ["Cursor"])
 })

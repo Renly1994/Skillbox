@@ -139,22 +139,27 @@ export async function syncAgentCopyToMaster(
 ): Promise<SyncAgentCopyResult> {
   const skillName = safePathSegment(options.skillName)
   const agentName = safePathSegment(options.agentName)
-  const masterStat = await fs.lstat(options.masterPath)
+  const masterPath = await fs.realpath(options.masterPath)
+  const agentRealPath = await fs.realpath(options.agentPath)
+  const masterStat = await fs.lstat(masterPath)
   const agentStat = await fs.lstat(options.agentPath)
-  if (!masterStat.isDirectory() || masterStat.isSymbolicLink()) {
+  if (!masterStat.isDirectory()) {
     throw new Error("母版不是可同步的 Skill 目录")
   }
-  if (!agentStat.isDirectory() || agentStat.isSymbolicLink()) {
+  if (!(await fs.stat(agentRealPath)).isDirectory()) {
     throw new Error("该 Agent 当前没有可同步的独立副本")
   }
-  if (!(await pathExists(path.join(options.masterPath, "SKILL.md")))) {
+  const agentLinkTarget = agentStat.isSymbolicLink()
+    ? await fs.readlink(options.agentPath)
+    : null
+  if (!(await pathExists(path.join(masterPath, "SKILL.md")))) {
     throw new Error("母版缺少 SKILL.md，无法同步")
   }
-  if (!(await pathExists(path.join(options.agentPath, "SKILL.md")))) {
+  if (!(await pathExists(path.join(agentRealPath, "SKILL.md")))) {
     throw new Error("独立副本缺少 SKILL.md，无法同步")
   }
 
-  const changes = await compareSkillContents(options.masterPath, options.agentPath)
+  const changes = await compareSkillContents(masterPath, agentRealPath)
   if (changes.length === 0) {
     throw new Error("独立副本已与母版一致")
   }
@@ -172,69 +177,78 @@ export async function syncAgentCopyToMaster(
     skillName,
     backupId,
   )
-  const stagingPath = path.join(
-    options.backupRoot,
-    ".staging",
-    `${skillName}-${crypto.randomUUID()}`,
-  )
+  const transactionRoot = path.join(path.dirname(masterPath), `.skillbox-sync-${crypto.randomUUID()}`)
+  const stagingPath = path.join(transactionRoot, "new")
+  const rollbackPath = path.join(transactionRoot, "old")
 
   await Promise.all([
     fs.mkdir(path.dirname(previousMasterBackupPath), { recursive: true }),
     fs.mkdir(path.dirname(sourceCopyBackupPath), { recursive: true }),
-    fs.mkdir(path.dirname(stagingPath), { recursive: true }),
+    fs.mkdir(transactionRoot, { recursive: true }),
   ])
 
-  let masterBackedUp = false
+  let masterMoved = false
   let masterInstalled = false
-  let sourceCopyBackedUp = false
-  let agentCopyRemoved = false
+  let agentCopyTouched = false
 
   try {
-    await fs.cp(options.agentPath, stagingPath, { recursive: true })
-    // 项目副本可能与母版位于不同磁盘。rename 无法跨卷，因此先复制
-    // 一份可恢复备份，再删除原位置并建立指向新母版的链接。
-    await fs.cp(options.agentPath, sourceCopyBackupPath, { recursive: true })
-    sourceCopyBackedUp = true
-    await fs.rename(options.masterPath, previousMasterBackupPath)
-    masterBackedUp = true
-    await fs.rename(stagingPath, options.masterPath)
+    await fs.cp(agentRealPath, stagingPath, { recursive: true })
+    await fs.cp(agentRealPath, sourceCopyBackupPath, { recursive: true })
+    await fs.cp(masterPath, previousMasterBackupPath, { recursive: true })
+    await fs.rename(masterPath, rollbackPath)
+    masterMoved = true
+    await fs.rename(stagingPath, masterPath)
     masterInstalled = true
+
+    // 从删除前开始标记，部分删除失败时也必须用备份恢复。
+    agentCopyTouched = true
     await removePath(options.agentPath)
-    agentCopyRemoved = true
 
     const type = process.platform === "win32" ? "junction" : undefined
     const linkTarget = type
       ? options.masterPath
       : path.relative(path.dirname(options.agentPath), options.masterPath)
     await fs.symlink(linkTarget, options.agentPath, type)
-    if ((await fs.realpath(options.agentPath)) !== (await fs.realpath(options.masterPath))) {
+    if ((await fs.realpath(options.agentPath)) !== masterPath) {
       throw new Error("同步后的 Agent 链接没有指向母版")
     }
 
+    await removePath(transactionRoot).catch(() => {})
     return { previousMasterBackupPath, sourceCopyBackupPath }
   } catch (error) {
     const rollbackErrors: unknown[] = []
     try {
-      if (agentCopyRemoved) {
+      if (agentCopyTouched) {
         await removePath(options.agentPath)
-        await fs.cp(sourceCopyBackupPath, options.agentPath, { recursive: true })
+        if (agentLinkTarget !== null) {
+          await fs.symlink(
+            agentLinkTarget,
+            options.agentPath,
+            process.platform === "win32" ? "junction" : undefined,
+          )
+        } else {
+          await fs.cp(sourceCopyBackupPath, options.agentPath, { recursive: true })
+        }
       }
     } catch (rollbackError) {
       rollbackErrors.push(rollbackError)
     }
     try {
       if (masterInstalled) {
-        await removePath(options.masterPath)
+        await removePath(masterPath)
       }
-      if (masterBackedUp) {
-        await fs.rename(previousMasterBackupPath, options.masterPath)
+      if (masterMoved) {
+        await fs.rename(rollbackPath, masterPath)
       }
     } catch (rollbackError) {
       rollbackErrors.push(rollbackError)
     }
-    await removePath(stagingPath).catch((rollbackError) => rollbackErrors.push(rollbackError))
-    if (sourceCopyBackedUp && rollbackErrors.length === 0) {
+    if (rollbackErrors.length === 0) {
+      await removePath(transactionRoot).catch((rollbackError) => rollbackErrors.push(rollbackError))
       await removePath(sourceCopyBackupPath).catch((rollbackError) =>
+        rollbackErrors.push(rollbackError),
+      )
+      await removePath(previousMasterBackupPath).catch((rollbackError) =>
         rollbackErrors.push(rollbackError),
       )
     }

@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   isRequestedMarketplaceContent,
   marketplaceSourceKey,
+  requireLinkedSourceSkill,
   selectMarketplaceSkill,
 } from "../src/main/marketplace-install"
 
@@ -45,6 +46,41 @@ test("仓库内没有目标 Skill 时不拿其他 Skill 顶替", () => {
   )
 
   assert.equal(selected, null)
+})
+
+test("关联来源前必须确认仓库包含目标 Skill", () => {
+  const sourceDir = path.resolve("D:/temp/design-documents")
+  const unrelated = [{
+    name: "design-documents",
+    filePath: path.join(sourceDir, "design-documents", "SKILL.md"),
+  }]
+
+  assert.throws(
+    () => requireLinkedSourceSkill(unrelated, sourceDir, "awesome-design", "awesome-design"),
+    /没有找到.*awesome-design.*SKILL\.md/,
+  )
+  assert.equal(
+    requireLinkedSourceSkill([{
+      name: "awesome-design",
+      filePath: path.join(sourceDir, "skills", "renamed-folder", "SKILL.md"),
+    }], sourceDir, "awesome-design", "awesome-design").name,
+    "awesome-design",
+  )
+  assert.equal(
+    requireLinkedSourceSkill([{
+      name: "Design Guidance",
+      filePath: path.join(sourceDir, "SKILL.md"),
+    }], sourceDir, "awesome-design", "awesome-design", true).name,
+    "Design Guidance",
+  )
+})
+
+test("中文 Skill 名称不能被无关中文名称误匹配", () => {
+  const sourceDir = path.resolve("D:/temp/chinese-skills")
+  assert.throws(() => requireLinkedSourceSkill([{
+    name: "封面设计",
+    filePath: path.join(sourceDir, "封面设计", "SKILL.md"),
+  }], sourceDir, "视频剪辑", "视频剪辑"), /没有找到/)
 })
 
 test("仓库只有一个无关 Skill 时也不会误装", () => {

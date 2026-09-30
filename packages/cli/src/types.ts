@@ -11,6 +11,7 @@ export type AgentType =
   | "codex-cli"
   | "comate"
   | "deepseek-harness"
+  | "doubao-work"
   | "droid-cli"
   | "ob-1"
   | "continue"

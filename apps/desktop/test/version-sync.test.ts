@@ -126,6 +126,86 @@ test("将独立副本同步为母版，并保留同步前的双方版本", async
   })
 })
 
+test("母版是目录链接时仍能同步，并保留原链接", async () => {
+  await withFixture(async (masterPath, agentPath) => {
+    const realMasterPath = path.join(path.dirname(masterPath), "real-master")
+    await fs.rename(masterPath, realMasterPath)
+    await fs.symlink(realMasterPath, masterPath, process.platform === "win32" ? "junction" : "dir")
+    await Promise.all([
+      fs.writeFile(path.join(realMasterPath, "SKILL.md"), "old master"),
+      fs.writeFile(path.join(agentPath, "SKILL.md"), "new agent copy"),
+    ])
+
+    await syncAgentCopyToMaster({
+      skillName: "demo-skill",
+      agentName: "gemini-cli",
+      masterPath,
+      agentPath,
+      backupRoot: path.join(path.dirname(masterPath), "backups"),
+    })
+
+    assert.equal((await fs.lstat(masterPath)).isSymbolicLink(), true)
+    assert.equal(await fs.readFile(path.join(realMasterPath, "SKILL.md"), "utf8"), "new agent copy")
+    assert.equal(await fs.realpath(agentPath), await fs.realpath(masterPath))
+  })
+})
+
+test("Agent 副本是目录链接时仍能同步，原始目标内容保留", async () => {
+  await withFixture(async (masterPath, agentPath) => {
+    const realAgentPath = path.join(path.dirname(agentPath), "real-agent")
+    await fs.rename(agentPath, realAgentPath)
+    await fs.symlink(realAgentPath, agentPath, process.platform === "win32" ? "junction" : "dir")
+    await Promise.all([
+      fs.writeFile(path.join(masterPath, "SKILL.md"), "old master"),
+      fs.writeFile(path.join(realAgentPath, "SKILL.md"), "new agent copy"),
+    ])
+
+    await syncAgentCopyToMaster({
+      skillName: "demo-skill",
+      agentName: "gemini-cli",
+      masterPath,
+      agentPath,
+      backupRoot: path.join(path.dirname(masterPath), "backups"),
+    })
+
+    assert.equal(await fs.readFile(path.join(masterPath, "SKILL.md"), "utf8"), "new agent copy")
+    assert.equal(await fs.readFile(path.join(realAgentPath, "SKILL.md"), "utf8"), "new agent copy")
+    assert.equal(await fs.realpath(agentPath), await fs.realpath(masterPath))
+  })
+})
+
+test("建立 Agent 链接失败时恢复母版和副本", async () => {
+  await withFixture(async (masterPath, agentPath) => {
+    const backupRoot = path.join(path.dirname(masterPath), "backups")
+    await Promise.all([
+      fs.writeFile(path.join(masterPath, "SKILL.md"), "old master"),
+      fs.writeFile(path.join(agentPath, "SKILL.md"), "new agent copy"),
+    ])
+
+    const originalSymlink = fs.symlink
+    let failNextLink = true
+    fs.symlink = async (...args) => {
+      if (args[1] === agentPath && failNextLink) {
+        failNextLink = false
+        throw new Error("模拟创建链接失败")
+      }
+      return originalSymlink(...args)
+    }
+    try {
+      await assert.rejects(
+        syncAgentCopyToMaster({ skillName: "demo-skill", agentName: "gemini-cli", masterPath, agentPath, backupRoot }),
+        /模拟创建链接失败/,
+      )
+    } finally {
+      fs.symlink = originalSymlink
+    }
+
+    assert.equal(await fs.readFile(path.join(masterPath, "SKILL.md"), "utf8"), "old master")
+    assert.equal(await fs.readFile(path.join(agentPath, "SKILL.md"), "utf8"), "new agent copy")
+    assert.equal((await fs.lstat(agentPath)).isDirectory(), true)
+  })
+})
+
 test("项目通用目录副本同步时，母版与副本备份不会相互覆盖", async () => {
   await withFixture(async (masterPath, agentPath) => {
     const backupRoot = path.join(path.dirname(masterPath), "backups")
@@ -195,6 +275,34 @@ test(
     } finally {
       await fs.rm(masterRoot, { recursive: true, force: true })
       await fs.rm(agentRoot, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
+  "母版与备份位于不同磁盘时仍可同步",
+  { skip: path.parse(os.homedir()).root.toLowerCase() === path.parse(os.tmpdir()).root.toLowerCase() },
+  async () => {
+    const backupRoot = await fs.mkdtemp(path.join(os.homedir(), ".skillbox-version-sync-backup-"))
+    try {
+      await withFixture(async (masterPath, agentPath) => {
+        await Promise.all([
+          fs.writeFile(path.join(masterPath, "SKILL.md"), "old master"),
+          fs.writeFile(path.join(agentPath, "SKILL.md"), "new agent copy"),
+        ])
+        const result = await syncAgentCopyToMaster({
+          skillName: "demo-skill",
+          agentName: "gemini-cli",
+          masterPath,
+          agentPath,
+          backupRoot,
+        })
+        assert.equal(await fs.readFile(path.join(masterPath, "SKILL.md"), "utf8"), "new agent copy")
+        assert.equal(await fs.readFile(path.join(result.previousMasterBackupPath, "SKILL.md"), "utf8"), "old master")
+        assert.equal(await fs.realpath(agentPath), await fs.realpath(masterPath))
+      })
+    } finally {
+      await fs.rm(backupRoot, { recursive: true, force: true })
     }
   },
 )

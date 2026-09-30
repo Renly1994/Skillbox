@@ -12,9 +12,23 @@ import { NavLink } from "react-router-dom"
 import { electronAPI } from "../lib/electron-api"
 import { AgentLogo } from "../components/agent-logo"
 import { SidebarUtilities, SkillboxBrand } from "../components/skillbox-brand"
+import { FavoritesNavLink, McpNavLink } from "../components/mcp-nav"
+import { HomeNavLink } from "../components/home-nav"
+import { SupportAuthorButton } from "../components/support-author"
+import {
+  SkillTranslationAction,
+  SkillTranslationStatus,
+  resolveTranslationDescription,
+  type TranslationViewPreference,
+  useSkillTranslation,
+  useTranslationViewPreferences,
+} from "../components/skill-translation"
+import { extractSkillDescription } from "../lib/skill-translation-document"
+import { categorizeSkill } from "../lib/skill-category"
 import {
   createInstalledMarketplaceState,
   formatInstallProgress,
+  hasSameNameMarketplaceSkill,
   isMarketplaceSkillInstalled,
   marketplaceKey,
   mergeInstallTask,
@@ -270,38 +284,67 @@ interface SkillCardProps {
   skill: CatalogSkill
   onSelect: (skill: CatalogSkill) => void
   installedState: InstalledMarketplaceState
+  sourceDescription?: string | null
+  descriptionLoading: boolean
+  translationPreference?: TranslationViewPreference
 }
 
 const SkillCard = memo(function SkillCard({
   skill,
   onSelect,
   installedState,
+  sourceDescription,
+  descriptionLoading,
+  translationPreference,
 }: SkillCardProps) {
   const isInstalled = isMarketplaceSkillInstalled(installedState, skill)
+  const hasSameName = hasSameNameMarketplaceSkill(installedState, skill)
+  const originalDescription = translationPreference?.sourceDescription || sourceDescription || ""
+  const visibleDescription = resolveTranslationDescription(
+    originalDescription,
+    translationPreference,
+  )
+  const category = categorizeSkill(skill.name, originalDescription)
 
   return (
     <button
       onClick={() => onSelect(skill)}
       className="skillbox-market-card"
     >
-      {/* Name + installs row */}
-      <div className="flex items-center gap-2">
+      <div className="skillbox-market-card__header">
         <h3 data-no-localize className="text-[13px] font-semibold text-foreground truncate">
           {skill.name}
         </h3>
-        {skill.isOfficial && <OfficialBadge />}
-        {isInstalled && (
-          <span className="text-[11px] uppercase tracking-wider font-medium text-accent bg-surface-hover px-1.5 py-0.5 rounded flex-shrink-0">
-            installed
-          </span>
-        )}
         {skill.installs > 0 && (
-          <span className="flex-shrink-0 flex items-center gap-1 text-[11px] font-mono text-muted ml-auto">
+          <span className="skillbox-market-card__installs">
             <InstallsIcon />
             {formatInstalls(skill.installs)}
           </span>
         )}
       </div>
+
+      <div className="skillbox-market-card__meta">
+        <span className="skillbox-category-badge">
+          <span className="cat-icon" style={{ color: category.color }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d={category.icon} />
+            </svg>
+          </span>
+          {category.label}
+        </span>
+        {skill.isOfficial && <OfficialBadge />}
+        {isInstalled && (
+          <span className="skillbox-market-card__installed">已安装</span>
+        )}
+        {hasSameName && <span className="skillbox-market-card__same-name" title="本地有同名 Skill，但未确认来自此仓库">本地同名</span>}
+      </div>
+
+      <p
+        data-no-localize
+        className={`skillbox-market-card__description${descriptionLoading && !visibleDescription ? " is-loading" : ""}`}
+      >
+        {visibleDescription || (descriptionLoading ? "正在读取描述…" : "暂无描述")}
+      </p>
 
       {/* Source + affordance row (single compact line) */}
       <div className="skillbox-market-card__footer">
@@ -329,9 +372,12 @@ function MarketSidebar({
         <SkillboxBrand />
         <section className="skillbox-nav-section">
           <h3>Library</h3>
-          <NavLink to="/" className="skillbox-library-button">
+          <HomeNavLink />
+          <NavLink to="/library" className="skillbox-library-button">
             <span>⌘ All Skills</span><strong>{installedCount}</strong>
           </NavLink>
+          <McpNavLink />
+          <FavoritesNavLink />
         </section>
         <section className="skillbox-nav-section skillbox-agent-section">
           <h3>Install to <span>选择安装目标</span></h3>
@@ -508,11 +554,14 @@ function DetailPanel({
     getCachedContent(cacheKey) ?? null,
   )
   const [loading, setLoading] = useState(getCachedContent(cacheKey) === undefined)
+  const sourceDescription = useMemo(() => extractSkillDescription(content), [content])
+  const translationState = useSkillTranslation(content, sourceDescription, cacheKey)
   const installing = installTask?.status === "running"
   const installError = installTask?.status === "failed" ? installTask.error : null
   const installed =
     isMarketplaceSkillInstalled(installedState, skill) ||
     installTask?.status === "completed"
+  const hasSameName = hasSameNameMarketplaceSkill(installedState, skill)
 
   // Fetch SKILL.md content from GitHub raw
   useEffect(() => {
@@ -555,12 +604,13 @@ function DetailPanel({
   }, [defaultAgents, installTask?.key, skill.skillId])
 
   const renderedContent = useMemo(
-    () => (content ? renderMarkdown(content) : ""),
-    [content],
+    () => (translationState.visibleContent ? renderMarkdown(translationState.visibleContent) : ""),
+    [translationState.visibleContent],
   )
 
   function handleInstall() {
     if (!skill.source) return
+    if (hasSameName && !window.confirm("本地已有同名 Skill，但尚未确认来自此仓库。继续安装可能影响同名 Skill 的现有副本。确定继续吗？")) return
 
     console.log("[discover/detail] install clicked", {
       source: skill.source,
@@ -609,6 +659,7 @@ function DetailPanel({
               {skill.name}
             </h2>
           </div>
+          <SkillTranslationAction state={translationState} />
           <a
             href={githubUrl}
             target="_blank"
@@ -633,6 +684,15 @@ function DetailPanel({
                 </span>
               )}
             </div>
+
+            {translationState.visibleDescription && (
+              <p data-no-localize className="text-sm text-muted mb-3">
+                {translationState.visibleDescription}
+              </p>
+            )}
+            <SkillTranslationStatus state={translationState} />
+
+            {hasSameName && !installed && <p className="skillbox-market-same-name-note">本地有同名 Skill，但来源未确认。若这是已有 Skill 的来源，请到“全部技能”的详情中关联，不必重新安装。</p>}
 
             {/* Install button */}
             <div className="flex items-center gap-3 mb-4">
@@ -684,6 +744,9 @@ function DetailPanel({
               >
                 {formatInstallProgress(installTask)}
               </p>
+            )}
+            {installTask?.status === "completed" && (
+              <div className="skillbox-support-after-success"><SupportAuthorButton /></div>
             )}
           </div>
 
@@ -762,6 +825,7 @@ function BackgroundInstallTasks({
 // ---------------------------------------------------------------------------
 
 export function Discover() {
+  const translationPreferences = useTranslationViewPreferences()
   const [skills, setSkills] = useState<CatalogSkill[]>([])
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -784,6 +848,7 @@ export function Discover() {
   const [officialOnly, setOfficialOnly] = useState(false)
   const [page, setPage] = useState(1)
   const [showBackToTop, setShowBackToTop] = useState(false)
+  const [marketDescriptions, setMarketDescriptions] = useState<Record<string, string | null>>({})
 
   // The skills.sh API honors `limit` but ignores offset/page/cursor, so a
   // bigger local result set means re-requesting from the top with a larger
@@ -794,6 +859,7 @@ export function Discover() {
   const contentCacheRef = useRef(new Map<string, string | null>())
   const inFlightPageKeysRef = useRef(new Set<string>())
   const latestQueryRef = useRef("")
+  const requestedSummaryKeysRef = useRef(new Set<string>())
 
   function updateInstalledState(installed: InstalledSkill[]) {
     setInstalledState(createInstalledMarketplaceState(installed))
@@ -937,13 +1003,13 @@ export function Discover() {
 
   // Back-to-top visibility
   useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    function onScroll() {
-      setShowBackToTop(el.scrollTop > 400)
+    const scrollElement = scrollRef.current
+    if (!scrollElement) return
+    const onScroll = () => {
+      setShowBackToTop(scrollElement.scrollTop > 400)
     }
-    el.addEventListener("scroll", onScroll)
-    return () => el.removeEventListener("scroll", onScroll)
+    scrollElement.addEventListener("scroll", onScroll)
+    return () => scrollElement.removeEventListener("scroll", onScroll)
   }, [])
 
   // A new query or filter always lands on the first page.
@@ -1068,6 +1134,35 @@ export function Discover() {
     (currentPage - 1) * PAGE_SIZE,
     currentPage * PAGE_SIZE,
   )
+  const pageSkillKeys = pageSkills
+    .map((skill) => `${skill.source}:${skill.skillId}`)
+    .join("|")
+
+  useEffect(() => {
+    const queue = pageSkills.filter((skill) => {
+      const key = `${skill.source}:${skill.skillId}`
+      if (translationPreferences[key]?.sourceDescription) return false
+      if (Object.prototype.hasOwnProperty.call(marketDescriptions, key)) return false
+      if (requestedSummaryKeysRef.current.has(key)) return false
+      requestedSummaryKeysRef.current.add(key)
+      return true
+    })
+
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < queue.length) {
+        const skill = queue[cursor++]
+        const key = `${skill.source}:${skill.skillId}`
+        const summary = await electronAPI.fetchSkillSummary(skill.source, skill.skillId)
+          .catch(() => null)
+        setMarketDescriptions((current) => ({ ...current, [key]: summary }))
+      }
+    }
+
+    void Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker))
+    // Page identity is sufficient; summaries update their own keyed state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageSkillKeys])
 
   const goToPage = useCallback(
     async (next: number) => {
@@ -1104,7 +1199,7 @@ export function Discover() {
         agents={availableAgents}
         selectedTargets={marketTargets}
         onToggleTarget={toggleMarketTarget}
-        installedCount={installedState.names.size}
+        installedCount={installedState.count}
       />
       <div className="skillbox-market-main">
       {/* Header */}
@@ -1238,6 +1333,12 @@ export function Discover() {
                   skill={skill}
                   onSelect={setSelectedSkill}
                   installedState={installedState}
+                  sourceDescription={marketDescriptions[`${skill.source}:${skill.skillId}`]}
+                  descriptionLoading={!Object.prototype.hasOwnProperty.call(
+                    marketDescriptions,
+                    `${skill.source}:${skill.skillId}`,
+                  ) && !translationPreferences[`${skill.source}:${skill.skillId}`]?.sourceDescription}
+                  translationPreference={translationPreferences[`${skill.source}:${skill.skillId}`]}
                 />
               ))}
             </div>

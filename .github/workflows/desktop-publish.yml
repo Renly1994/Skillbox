@@ -99,14 +99,14 @@ jobs:
           fi
 
           if [[ "${{ matrix.platform }}" != "mac" ]]; then
-            npm run "package:${{ matrix.platform }}" -w @skillsgate/desktop -- "${package_args[@]}"
+            npm run "package:${{ matrix.platform }}" -w @skillbox/desktop -- "${package_args[@]}"
             exit 0
           fi
 
           max_attempts=3
           for attempt in $(seq 1 "$max_attempts"); do
             echo "macOS packaging attempt $attempt/$max_attempts"
-            if npm run "package:${{ matrix.platform }}" -w @skillsgate/desktop -- "${package_args[@]}"; then
+            if npm run "package:${{ matrix.platform }}" -w @skillbox/desktop -- "${package_args[@]}"; then
               exit 0
             fi
 
@@ -139,14 +139,14 @@ jobs:
           native_module="$(find "$app_path" -type f -name 'better_sqlite3.node' -print -quit)"
           test -n "$native_module"
 
-          file "$app_path/Contents/MacOS/Skillbox"
+          file "$app_path/Contents/MacOS/SkillboxApp"
           file "$native_module"
 
           expected_arch="${{ matrix.arch }}"
           if [[ "$expected_arch" == "x64" ]]; then
             expected_arch="x86_64"
           fi
-          file "$app_path/Contents/MacOS/Skillbox" | grep -q "$expected_arch"
+          file "$app_path/Contents/MacOS/SkillboxApp" | grep -q "$expected_arch"
           file "$native_module" | grep -q "$expected_arch"
 
           test -n "$(find apps/desktop/release -maxdepth 1 -type f -name '*.dmg' -print -quit)"
@@ -165,6 +165,11 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Verify Windows executable icon
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: ./apps/desktop/scripts/verify-windows-package.ps1 -ReleaseDirectory ./apps/desktop/release
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

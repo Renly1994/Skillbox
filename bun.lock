@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "skillsgate-monorepo",
+      "name": "skillbox-monorepo",
       "devDependencies": {
         "@pinecone-database/pinecone": "7.0.0",
         "@types/node": "22.19.11",
@@ -26,8 +26,8 @@
       },
     },
     "apps/desktop": {
-      "name": "@skillsgate/desktop",
-      "version": "0.4.10",
+      "name": "@skillbox/desktop",
+      "version": "2.0.0",
       "dependencies": {
         "@codemirror/commands": "^6.10.3",
         "@codemirror/lang-markdown": "^6.5.0",
@@ -36,7 +36,7 @@
         "@codemirror/search": "^6.6.0",
         "@codemirror/state": "^6.6.0",
         "@codemirror/view": "^6.41.0",
-        "@skillsgate/ui": "*",
+        "@skillbox/ui": "*",
         "better-sqlite3": "12.8.0",
         "electron-updater": "6.6.2",
         "gray-matter": "4.0.3",
@@ -66,7 +66,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@react-router/cloudflare": "7.13.1",
-        "@skillsgate/ui": "*",
+        "@skillbox/ui": "*",
         "isbot": "5.1.35",
         "marked": "17.0.4",
         "react": "19.1.5",
@@ -103,7 +103,7 @@
       },
     },
     "packages/local-db": {
-      "name": "@skillsgate/local-db",
+      "name": "@skillbox/local-db",
       "version": "0.1.0",
       "devDependencies": {
         "@types/node": "22.19.11",
@@ -131,7 +131,7 @@
       },
     },
     "packages/ui": {
-      "name": "@skillsgate/ui",
+      "name": "@skillbox/ui",
       "version": "0.1.0",
       "devDependencies": {
         "@types/react": "19.2.13",
@@ -553,13 +553,13 @@
 
     "@sindresorhus/merge-streams": ["@sindresorhus/merge-streams@4.0.0", "", {}, ""],
 
-    "@skillsgate/desktop": ["@skillsgate/desktop@workspace:apps/desktop"],
+    "@skillbox/desktop": ["@skillbox/desktop@workspace:apps/desktop"],
 
-    "@skillsgate/local-db": ["@skillsgate/local-db@workspace:packages/local-db"],
+    "@skillbox/local-db": ["@skillbox/local-db@workspace:packages/local-db"],
 
     "@skillsgate/tui": ["@skillsgate/tui@workspace:packages/tui"],
 
-    "@skillsgate/ui": ["@skillsgate/ui@workspace:packages/ui"],
+    "@skillbox/ui": ["@skillbox/ui@workspace:packages/ui"],
 
     "@speed-highlight/core": ["@speed-highlight/core@1.2.14", "", {}, ""],
 

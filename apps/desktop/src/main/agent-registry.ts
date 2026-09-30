@@ -20,6 +20,19 @@ const factoryHome = process.env.FACTORY_HOME || path.join(home, ".factory")
 const ob1Home = process.env.OB1_HOME || path.join(home, ".ob1")
 const kimiCodeHome = process.env.KIMI_CODE_HOME || path.join(home, ".kimi-code")
 const dshHome = process.env.DSH_HOME || path.join(home, ".dsh")
+const doubaoWorkHome = process.platform === "win32"
+  ? path.join(process.env.LOCALAPPDATA || path.join(home, "AppData", "Local"), "DoubaoWork", "User Data")
+  : process.platform === "darwin"
+    ? path.join(home, "Library", "Application Support", "DoubaoWork")
+    : path.join(home, ".super_doubao", "super-doubao-runtime", "workspace")
+const doubaoWorkSkillsDir = process.platform === "linux"
+  ? path.join(doubaoWorkHome, ".user_skills")
+  : path.join(doubaoWorkHome, "Default", ".doubaowork", "agent_mode", "workspace", ".user_skills")
+const vscodeConfigHome = process.platform === "win32"
+  ? path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "Code")
+  : process.platform === "darwin"
+    ? path.join(home, "Library", "Application Support", "Code")
+    : path.join(configHome, "Code")
 const zedConfigHomes = [
   path.join(configHome, "zed"),
   ...(process.env.APPDATA ? [path.join(process.env.APPDATA, "Zed")] : []),
@@ -101,6 +114,13 @@ export const agentRegistry: Record<string, AgentEntry> = {
     globalSkillsDir: path.join(copilotHome, "skills"),
     additionalGlobalSkillsDirs: [path.join(configHome, "github-copilot", "skills")],
     detectInstalled: isGitHubCopilotInstalled,
+  },
+  vscode: {
+    name: "vscode",
+    displayName: "VS Code (Copilot)",
+    shortCode: "VS",
+    globalSkillsDir: path.join(copilotHome, "skills"),
+    detectInstalled: () => dirExists(vscodeConfigHome),
   },
   windsurf: {
     name: "windsurf",
@@ -228,6 +248,13 @@ export const agentRegistry: Record<string, AgentEntry> = {
     shortCode: "WB",
     globalSkillsDir: path.join(home, ".workbuddy", "skills"),
     detectInstalled: () => dirExists(path.join(home, ".workbuddy")),
+  },
+  "doubao-work": {
+    name: "doubao-work",
+    displayName: "豆包工作",
+    shortCode: "DB",
+    globalSkillsDir: doubaoWorkSkillsDir,
+    detectInstalled: () => dirExists(doubaoWorkHome),
   },
   "kimi-code": {
     name: "kimi-code",

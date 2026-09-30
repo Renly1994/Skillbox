@@ -37,13 +37,25 @@ const PROJECT_PROBES = [
   ".agents/skills",
 ]
 
-function getScopeForPath(resolvedPath: string): "global" | "project" | "custom" {
+export function getScopeForPath(
+  resolvedPath: string,
+  additionalGlobalRoots: string[] = [],
+): "global" | "project" | "custom" {
   const globalRoots = [
     path.join(home, ".agents", "skills"),
+    ...additionalGlobalRoots,
     ...Object.values(agents).map((agent) => agent.globalSkillsDir),
   ].map((root) => path.resolve(root))
+  const target = path.resolve(resolvedPath)
 
-  if (globalRoots.some((root) => resolvedPath.startsWith(root))) {
+  if (globalRoots.some((root) => {
+    const relative = path.relative(root, target)
+    return relative === "" || (
+      relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative)
+    )
+  })) {
     return "global"
   }
 
@@ -231,6 +243,8 @@ async function fullScan(
 ): Promise<EnrichedSkill[]> {
   const lock = await readSkillLock()
   const skillMap = new Map<string, EnrichedSkill>()
+  const canonicalSkillsRoot = path.join(home, ".agents", "skills")
+  const physicalCanonicalSkillsRoot = await fs.realpath(canonicalSkillsRoot).catch(() => canonicalSkillsRoot)
 
   // Scan each agent's global skills directory
   for (const agent of Object.values(agents)) {
@@ -248,7 +262,7 @@ async function fullScan(
           const { data: frontmatter } = matter(raw)
           const skillName = entry.name
           const canonicalPath = await fs.realpath(skillDirPath).catch(() => skillDirPath)
-          const scope = getScopeForPath(canonicalPath)
+          const scope = getScopeForPath(canonicalPath, [physicalCanonicalSkillsRoot])
           const supportingFiles = await listSupportingFiles(canonicalPath)
 
           const existing = skillMap.get(canonicalPath)

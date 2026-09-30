@@ -7,9 +7,9 @@ import {
   useRef,
   memo,
 } from "react"
-import { List } from "react-window"
+import { List, type RowComponentProps } from "react-window"
 import { marked } from "marked"
-import { NavLink } from "react-router-dom"
+import { NavLink, useLocation } from "react-router-dom"
 import { electronAPI } from "../lib/electron-api"
 import { categorizeSkill } from "../lib/skill-category"
 import { DEFAULT_LIBRARY_FILTERS, refineLibrarySkills, type LibraryFilters } from "../lib/skill-library-filters"
@@ -24,51 +24,32 @@ import { useLocalization } from "../lib/localization"
 import { SkillEditor, type SkillEditorHandle } from "../components/skill-editor"
 import { AgentLogo, AgentLogoRow } from "../components/agent-logo"
 import { SidebarUtilities, SkillboxBrand } from "../components/skillbox-brand"
+import {
+  McpFavoritesSection,
+  McpNavLink,
+  notifyFavoritesChanged,
+  useMcpLibrary,
+} from "../components/mcp-nav"
+import { CopySkillName } from "../components/copy-name"
+import { AliasTitle } from "../components/alias-title"
+import { useDisplayAliases, setSkillAlias } from "../lib/display-aliases"
+import { HomeNavLink } from "../components/home-nav"
+import { SkillSourceDialog } from "../components/skill-source-dialog"
+import { SkillUpdateDialog } from "../components/skill-update-dialog"
+import { BulkSkillUpdateDialog } from "../components/bulk-skill-update-dialog"
+import { SkillVersionHistory } from "../components/skill-version-history"
+import {
+  SkillTranslationAction,
+  SkillTranslationStatus,
+  resolveTranslationDescription,
+  type TranslationViewPreference,
+  useSkillTranslation,
+  useTranslationViewPreferences,
+} from "../components/skill-translation"
 import { ScanSourcesDialog } from "./scan-sources"
 import skillboxMark from "../assets/skillbox-mark.svg"
+import { SupportAuthorButton } from "../components/support-author"
 
-function CopySkillName({ name }: { name: string }) {
-  const [status, setStatus] = useState("idle")
-  useEffect(() => {
-    setStatus("idle")
-  }, [name])
-  useEffect(() => {
-    if (status === "idle") return
-    const timer = setTimeout(() => setStatus("idle"), 1600)
-    return () => clearTimeout(timer)
-  }, [status])
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(name)
-      setStatus("copied")
-    } catch {
-      setStatus("error")
-    }
-  }
-  const label = status === "copied" ? "已复制名称" : status === "error" ? "复制失败，请重试" : "复制名称"
-  return (
-    <button
-      type="button"
-      className="skillbox-copy-name"
-      title={label}
-      aria-label={`${label}：${name}`}
-      onClick={(event) => { event.stopPropagation(); void copy() }}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault()
-          event.stopPropagation()
-          void copy()
-        }
-      }}
-      onKeyUp={(event) => event.stopPropagation()}
-    >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        {status === "copied" ? <path d="m5 12 4 4L19 6" /> : <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V4H4v12h4" /></>}
-      </svg>
-      <span className="sr-only" role="status">{status === "idle" ? "" : label}</span>
-    </button>
-  )
-}
 
 // Map display names to registry keys
 const DISPLAY_NAME_TO_KEY: Record<string, string> = {
@@ -76,6 +57,7 @@ const DISPLAY_NAME_TO_KEY: Record<string, string> = {
   "Claude Code": "claude-code",
   Cursor: "cursor",
   "GitHub Copilot": "github-copilot",
+  "VS Code (Copilot)": "vscode",
   Windsurf: "windsurf",
   Cline: "cline",
   Continue: "continue",
@@ -92,6 +74,7 @@ const DISPLAY_NAME_TO_KEY: Record<string, string> = {
   "Qwen Code": "qwen-code",
   ZCode: "zcode",
   WorkBuddy: "workbuddy",
+  豆包工作: "doubao-work",
   "Kimi Code": "kimi-code",
   "DeepSeek Harness": "deepseek-harness",
   QoderWork: "qoderwork",
@@ -162,21 +145,6 @@ function SearchIcon({ size = 16 }: { size?: number }) {
 
 function SkillboxIcon() {
   return <img src={skillboxMark} alt="" width="48" height="48" className="opacity-50" />
-}
-
-function SourceBadge({ sourceType }: { sourceType?: string }) {
-  if (!sourceType) return null
-  const label =
-    sourceType === "github"
-      ? "github"
-      : sourceType === "skillsgate"
-        ? "skillbox"
-        : "local"
-  return (
-    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-surface-hover text-muted border border-border">
-      {label}
-    </span>
-  )
 }
 
 // Configure marked for synchronous rendering
@@ -298,6 +266,14 @@ function LeftSidebar({
   onDropOnAgent,
   onDropOnCollection,
 }: LeftSidebarProps) {
+  // 适配数为 0 的 Agent 默认不显示；正在拖拽 Skill 时全部显示，
+  // 以便拖到尚未适配的 Agent 上完成适配。
+  const visibleAgents = detectedAgents.filter(
+    (agent) =>
+      (agentSkillCounts[agent.displayName] || 0) > 0 ||
+      selectedAgent === agent.displayName ||
+      dragSkill !== null,
+  )
   return (
     <aside className="skillbox-sidebar">
       <div className="skillbox-sidebar__scroll">
@@ -306,6 +282,7 @@ function LeftSidebar({
         <section className="skillbox-nav-section">
           <h3>Library</h3>
           <nav className="flex flex-col gap-1">
+          <HomeNavLink />
           <button
             onClick={() => {
               onFilterChange("all")
@@ -321,21 +298,22 @@ function LeftSidebar({
             <span className="flex items-center gap-2"><span aria-hidden>⌘</span> All Skills</span>
             <strong>{totalSkillCount}</strong>
           </button>
+          <McpNavLink />
           <button
             onClick={() => onFilterChange("favorites")}
-            className={`skillbox-secondary-button ${activeFilter === "favorites" ? "is-active" : ""}`}
+            className={`skillbox-library-button ${activeFilter === "favorites" ? "is-active" : ""}`}
           >
             <span className="flex items-center gap-2"><StarIcon size={12} /> Favorites</span>
-            <span>{favoritesCount}</span>
+            <strong>{favoritesCount}</strong>
           </button>
         </nav>
         </section>
 
-      {detectedAgents.length > 0 && (
+      {visibleAgents.length > 0 && (
         <section className="skillbox-nav-section skillbox-agent-section">
           <h3>Agents <span>点击筛选已适配 Skill</span></h3>
           <nav className="flex flex-col gap-1.5">
-            {detectedAgents.map((agent) => (
+            {visibleAgents.map((agent) => (
               <button
                 key={agent.name}
                 onClick={() => {
@@ -471,15 +449,15 @@ const MemoizedLeftSidebar = memo(LeftSidebar)
 // Virtualized Skill List Row
 // --------------------------------------------------------------------------
 
-interface SkillRowProps {
-  index: number
-  style: React.CSSProperties
+interface SkillRowDataProps {
+  skillAliases: Record<string, string>
   skills: InstalledSkill[]
   multiSelected: Set<string>
   isMultiSelectActive: boolean
   selectedSkillPath: string | null
   dragSkill: DragSkillPayload | null
   favorites: Set<string>
+  translationPreferences: Record<string, TranslationViewPreference>
   onSelectSkill: (skill: InstalledSkill) => void
   onMultiSelectToggle: (skill: InstalledSkill, e: React.MouseEvent) => void
   onToggleFavorite: (skill: InstalledSkill, e: React.MouseEvent) => void
@@ -487,7 +465,10 @@ interface SkillRowProps {
   onDragSkillEnd: () => void
 }
 
-const SkillListRow = memo(function SkillListRow({
+type SkillRowProps = RowComponentProps<SkillRowDataProps>
+
+function SkillListRow({
+  skillAliases,
   index,
   style,
   skills,
@@ -496,17 +477,22 @@ const SkillListRow = memo(function SkillListRow({
   selectedSkillPath,
   dragSkill,
   favorites,
+  translationPreferences,
   onSelectSkill,
   onMultiSelectToggle,
   onToggleFavorite,
   onDragSkillStart,
   onDragSkillEnd,
-}: SkillRowProps) {
+}: SkillRowProps): React.ReactElement | null {
   const skill = skills[index]
   if (!skill) return null
   const isMultiChecked = multiSelected.has(skill.canonicalPath)
   const isFavorited = favorites.has(skill.name)
   const category = categorizeSkill(skill.name, skill.description)
+  const visibleDescription = resolveTranslationDescription(
+    skill.description,
+    translationPreferences[skill.canonicalPath],
+  )
 
   return (
     <div style={style} className="px-0.5">
@@ -569,8 +555,8 @@ const SkillListRow = memo(function SkillListRow({
               )}
             </span>
           )}
-          <button type="button" data-no-localize className="skillbox-skill-name">
-            {skill.name}
+          <button type="button" data-no-localize className="skillbox-skill-name" title={skill.name}>
+            {skillAliases[skill.canonicalPath] ?? skill.name}
           </button>
           <CopySkillName name={skill.name} />
         </span>
@@ -620,15 +606,15 @@ const SkillListRow = memo(function SkillListRow({
         </span>
         <span
           data-no-localize
-          title={skill.description || "暂无简介"}
+          title={visibleDescription || "暂无简介"}
           className="skillbox-skill-description"
         >
-          {skill.description || "暂无简介"}
+          {visibleDescription || "暂无简介"}
         </span>
       </div>
     </div>
   )
-})
+}
 
 // --------------------------------------------------------------------------
 // Middle Skill List Panel
@@ -659,8 +645,10 @@ interface MiddlePanelProps {
   onImportPackage: () => void
   onExportPackage: () => void
   onRefresh: () => Promise<void>
+  onCheckLinkedUpdates: () => void
   onOpenScanSources: () => void
   refreshing: boolean
+  checkingLinkedSources: boolean
   migrationBusy: "import" | "export" | null
   dragSkill: DragSkillPayload | null
   onDragSkillStart: (skill: InstalledSkill) => void
@@ -673,10 +661,16 @@ interface MiddlePanelProps {
   onMultiSelectClear: () => void
   favorites: Set<string>
   onToggleFavorite: (skill: InstalledSkill, e: React.MouseEvent) => void
+  onToggleMcpFavorite: (serverName: string) => void
+  selectedFavoriteMcpName: string | null
+  onSelectFavoriteMcp: (name: string | null) => void
+  favTypeFilter: "all" | "skills" | "mcp"
+  onFavTypeFilterChange: (value: "all" | "skills" | "mcp") => void
   collections: Record<string, string[]>
   onBulkAddToCollection: (collectionName: string) => void
   onBulkCreateCollection: () => void
   onBulkFavorite: () => Promise<void>
+  onBulkLinkSource: () => void
   onBulkAdaptToAgent: (agent: DetectedAgent) => Promise<void>
   bulkAgentBusy: string | null
   onBulkDelete: () => void
@@ -708,8 +702,10 @@ function MiddlePanel({
   onImportPackage,
   onExportPackage,
   onRefresh,
+  onCheckLinkedUpdates,
   onOpenScanSources,
   refreshing,
+  checkingLinkedSources,
   migrationBusy,
   dragSkill,
   onDragSkillStart,
@@ -722,17 +718,28 @@ function MiddlePanel({
   onMultiSelectClear,
   favorites,
   onToggleFavorite,
+  onToggleMcpFavorite,
+  selectedFavoriteMcpName,
+  onSelectFavoriteMcp,
+  favTypeFilter,
+  onFavTypeFilterChange,
   collections,
   onBulkAddToCollection,
   onBulkCreateCollection,
   onBulkFavorite,
+  onBulkLinkSource,
   onBulkAdaptToAgent,
   bulkAgentBusy,
   onBulkDelete,
   listRef,
 }: MiddlePanelProps) {
+  const translationPreferences = useTranslationViewPreferences()
   const [showCollectionDropdown, setShowCollectionDropdown] = useState(false)
   const [showAgentDropdown, setShowAgentDropdown] = useState(false)
+  const [favoriteSkillFilters, setFavoriteSkillFilters] = useState<LibraryFilters>(DEFAULT_LIBRARY_FILTERS)
+  const [favoriteSkillScope, setFavoriteSkillScope] = useState<SkillScopeFilter>("all")
+  const [favoriteSkillAgent, setFavoriteSkillAgent] = useState("")
+  const skillAliases = useDisplayAliases().skill
   const collectionDropdownRef = useRef<HTMLDivElement>(null)
   const agentDropdownRef = useRef<HTMLDivElement>(null)
   // 复选框仅在显式选择模式中显示。
@@ -748,11 +755,13 @@ function MiddlePanel({
   const rowProps = useMemo(
     () => ({
       skills: filteredSkills,
+      skillAliases,
       multiSelected,
       isMultiSelectActive,
       selectedSkillPath,
       dragSkill,
       favorites,
+      translationPreferences,
       onSelectSkill,
       onMultiSelectToggle,
       onToggleFavorite,
@@ -761,11 +770,13 @@ function MiddlePanel({
     }),
     [
       filteredSkills,
+      skillAliases,
       multiSelected,
       isMultiSelectActive,
       selectedSkillPath,
       dragSkill,
       favorites,
+      translationPreferences,
       onSelectSkill,
       onMultiSelectToggle,
       onToggleFavorite,
@@ -797,14 +808,41 @@ function MiddlePanel({
     return () => document.removeEventListener("mousedown", handleClick)
   }, [showAgentDropdown, showCollectionDropdown])
 
-  const viewTitle = selectedAgent || selectedCollection || (libraryFilters.uncollected ? "未归入集合" : null) || (activeFilter === "favorites" ? "Favorites" : "All Skills")
+  const favoritesMode = activeFilter === "favorites"
+  const baseSkills = useMemo(
+    () => (favoritesMode ? skills.filter((skill) => favorites.has(skill.name)) : skills),
+    [favoritesMode, skills, favorites],
+  )
+  const viewScopeCounts = useMemo<Record<SkillScopeFilter, number>>(() => ({
+    all: baseSkills.length,
+    global: baseSkills.filter((skill) => skill.scope === "global").length,
+    project: baseSkills.filter((skill) => skill.scope === "project").length,
+    custom: baseSkills.filter((skill) => skill.scope === "custom").length,
+  }), [baseSkills])
+  const favoriteCategories = useMemo(() => Array.from(new Set(baseSkills.map((skill) => categorizeSkill(skill.name, skill.description).label))).sort((a, b) => a.localeCompare(b, "zh-CN")), [baseSkills])
+  const favoriteAgents = useMemo(() => Array.from(new Set(baseSkills.flatMap(getAgentFilterNames))).sort((a, b) => a.localeCompare(b, "zh-CN")), [baseSkills])
+  const favoriteMismatchCount = useMemo(() => baseSkills.filter((skill) => skill.versionMismatches.length > 0).length, [baseSkills])
+  const favoriteSkillFiltersActive = Boolean(favoriteSkillFilters.category || favoriteSkillFilters.mismatched || favoriteSkillScope !== "all" || favoriteSkillAgent || favoriteSkillFilters.sort !== "default")
+  const visibleFavoriteSkills = useMemo(() => {
+    if (favTypeFilter !== "skills") return filteredSkills
+    return refineLibrarySkills(filteredSkills.filter((skill) =>
+      (favoriteSkillScope === "all" || skill.scope === favoriteSkillScope) &&
+      (!favoriteSkillAgent || getAgentFilterNames(skill).includes(favoriteSkillAgent)),
+    ), favoriteSkillFilters, collections, favorites)
+  }, [favTypeFilter, filteredSkills, favoriteSkillScope, favoriteSkillAgent, favoriteSkillFilters, collections, favorites])
+  const mcpLibrary = useMcpLibrary()
+  const favoritedMcpCount = useMemo(
+    () => (mcpLibrary?.servers ?? []).filter((server) => favorites.has(`mcp:${server.name}`)).length,
+    [favorites, mcpLibrary],
+  )
+  const viewTitle = selectedAgent || selectedCollection || (libraryFilters.uncollected ? "未归入集合" : null) || "All Skills"
   // Unique agents that actually carry skills, deduped by registry key. The
   // universal ~/.agents/skills directory is a shared folder, not an agent,
   // so it is excluded. Sorted by skill count so the avatar stack leads
   // with the most relevant agents.
   const skillAgentKeys = useMemo(() => {
     const counts = new Map<string, number>()
-    for (const skill of skills) {
+    for (const skill of baseSkills) {
       const keys = new Set(getAgentFilterNames(skill).map((name) => DISPLAY_NAME_TO_KEY[name] ?? name))
       keys.delete("universal")
       for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1)
@@ -812,10 +850,57 @@ function MiddlePanel({
     return Array.from(counts.entries())
       .sort((a, b) => b[1] - a[1])
       .map(([key]) => key)
-  }, [skills])
+  }, [baseSkills])
   const agentCount = skillAgentKeys.length
   // Show at most this many agent avatars; the rest collapse into a "+N" bubble.
   const AGENT_AVATAR_LIMIT = 5
+
+  if (favoritesMode) {
+    return <div className="skillbox-library-panel skillbox-favorites-panel">
+      <header className="skillbox-favorites-header">
+        <div><h1>收藏</h1><p>{baseSkills.length} 个 Skill · {favoritedMcpCount} 个 MCP</p></div>
+        <div className="skillbox-favorites-search">
+          <SearchIcon size={16} />
+          <input aria-label="搜索收藏" value={searchQuery} onChange={(event) => onSearchChange(event.target.value)} placeholder="搜索已收藏的 Skill 或 MCP" />
+          {searchQuery && <button type="button" onClick={() => onSearchChange("")} aria-label="清除搜索">×</button>}
+        </div>
+      </header>
+      <nav className="skillbox-favorites-tabs" role="tablist" aria-label="收藏类型">
+        {(["all", "skills", "mcp"] as const).map((value) => <button key={value} type="button" role="tab" aria-selected={favTypeFilter === value} onClick={() => onFavTypeFilterChange(value)}>
+          {value === "all" ? "全部" : value === "skills" ? "Skill" : "MCP"}
+          <span>{value === "all" ? baseSkills.length + favoritedMcpCount : value === "skills" ? baseSkills.length : favoritedMcpCount}</span>
+        </button>)}
+      </nav>
+      <div className="skillbox-favorites-content" ref={listRef} tabIndex={-1}>
+        {favTypeFilter !== "mcp" && <section className="skillbox-favorites-section">
+          <header className="skillbox-favorites-section__head"><div><h2>Skill <span>{visibleFavoriteSkills.length}/{baseSkills.length}</span></h2><p>常用技能</p></div>
+            {favTypeFilter === "skills" && <div className="skillbox-favorites-section__filters" aria-label="筛选收藏的 Skill">
+              <select aria-label="筛选收藏的 Skill 类别" value={favoriteSkillFilters.category} onChange={(event) => setFavoriteSkillFilters((current) => ({ ...current, category: event.target.value }))}><option value="">全部类别</option>{favoriteCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select>
+              <select aria-label="筛选收藏的 Skill 范围" value={favoriteSkillScope} onChange={(event) => setFavoriteSkillScope(event.target.value as SkillScopeFilter)}><option value="all">全部范围</option><option value="global">全局</option><option value="project">项目</option><option value="custom">自定义</option></select>
+              <select aria-label="筛选收藏的 Skill Agent" value={favoriteSkillAgent} onChange={(event) => setFavoriteSkillAgent(event.target.value)}><option value="">全部 Agent</option>{favoriteAgents.map((agent) => <option key={agent} value={agent}>{agent}</option>)}</select>
+              {favoriteMismatchCount > 0 && <button type="button" className="skillbox-favorites-filter-toggle" aria-pressed={favoriteSkillFilters.mismatched} onClick={() => setFavoriteSkillFilters((current) => ({ ...current, mismatched: !current.mismatched }))}>版本差异 {favoriteMismatchCount}</button>}
+              <select aria-label="排序收藏的 Skill" value={favoriteSkillFilters.sort} onChange={(event) => setFavoriteSkillFilters((current) => ({ ...current, sort: event.target.value as LibraryFilters["sort"] }))}><option value="default">默认排序</option><option value="name-asc">名称 A → Z</option><option value="name-desc">名称 Z → A</option><option value="updated">最近更新</option><option value="installed">最近添加</option><option value="coverage">适配数量</option></select>
+              {favoriteSkillFiltersActive && <button type="button" className="skillbox-favorites-filter-reset" onClick={() => { setFavoriteSkillFilters(DEFAULT_LIBRARY_FILTERS); setFavoriteSkillScope("all"); setFavoriteSkillAgent("") }}>清除</button>}
+            </div>}
+          </header>
+          <div className="skillbox-favorites-items">
+            {loading ? <p className="skillbox-favorites-empty">正在扫描 Skill…</p> : visibleFavoriteSkills.length === 0 ? <p className="skillbox-favorites-empty">{searchQuery || favoriteSkillFiltersActive ? "没有匹配的 Skill" : "暂无收藏的 Skill，可在技能列表点亮星标。"}</p> : visibleFavoriteSkills.map((skill) => {
+              const category = categorizeSkill(skill.name, skill.description)
+              const description = resolveTranslationDescription(skill.description, translationPreferences[skill.canonicalPath])
+              return <div key={skill.canonicalPath} className={`skillbox-favorites-item ${selectedSkillPath === skill.canonicalPath ? "is-selected" : ""}`}>
+                <button type="button" className="skillbox-favorites-item__open" aria-label={`查看 ${skill.name} 详情`} onClick={() => onSelectSkill(skill)} />
+                <span className="skillbox-favorites-item__icon" style={{ color: category.color }} aria-hidden="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d={category.icon} /></svg></span>
+                <span className="skillbox-favorites-item__main"><span className="skillbox-favorites-item__name"><strong data-no-localize title={skill.name}>{skillAliases[skill.canonicalPath] ?? skill.name}</strong><CopySkillName name={skill.name} /></span><small data-no-localize title={description || "暂无简介"}>{description || "暂无简介"}</small></span>
+                <span className="skillbox-favorites-item__agents"><AgentLogoRow agents={getSkillListAgentNames(skill)} size={19} /></span>
+                <button type="button" className="skillbox-favorites-item__star" aria-label={`取消收藏 ${skill.name}`} title="取消收藏" onClick={(event) => onToggleFavorite(skill, event)}><StarIcon size={17} filled /></button>
+              </div>
+            })}
+          </div>
+        </section>}
+        <McpFavoritesSection visible={favTypeFilter !== "skills"} favorites={favorites} searchQuery={searchQuery} showFilters={favTypeFilter === "mcp"} onToggleMcpFavorite={onToggleMcpFavorite} selectedName={selectedFavoriteMcpName} onSelect={onSelectFavoriteMcp} />
+      </div>
+    </div>
+  }
 
   return (
     <div className="skillbox-library-panel">
@@ -827,9 +912,9 @@ function MiddlePanel({
             <p>{skills.length} 个本地 Skill · 跨 {agentCount} 个 Agent</p>
           </div>
           <div className="skillbox-library-stats">
-            <span><strong>{scopeCounts.global}</strong> 全局</span>
-            <span><strong>{scopeCounts.project}</strong> 项目</span>
-            <span><strong>{scopeCounts.custom}</strong> 自定义</span>
+            <span><strong>{viewScopeCounts.global}</strong> 全局</span>
+            <span><strong>{viewScopeCounts.project}</strong> 项目</span>
+            <span><strong>{viewScopeCounts.custom}</strong> 自定义</span>
             <span
               className="skillbox-library-stats-agents"
               title={skillAgentKeys
@@ -881,6 +966,16 @@ function MiddlePanel({
               <span aria-hidden className={refreshing ? "skillbox-refresh-icon is-spinning" : "skillbox-refresh-icon"}>↻</span>
               {refreshing ? "扫描中" : "刷新"}
             </button>
+            <button
+              type="button"
+              onClick={onCheckLinkedUpdates}
+              disabled={loading || checkingLinkedSources}
+              className="skillbox-header-action"
+              title="检查全部已关联来源的 Skill，不受当前筛选影响"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 8h14m-4-4 4 4-4 4M20 16H6m4-4-4 4 4 4" /></svg>
+              检查来源更新
+            </button>
             <button onClick={onOpenScanSources} className="skillbox-header-action" title="添加或管理额外目录">
               添加目录
             </button>
@@ -910,7 +1005,7 @@ function MiddlePanel({
               }`}
             >
               <span>{label}</span>
-              <span className="ml-1 font-mono opacity-70">{scopeCounts[value]}</span>
+              <span className="ml-1 font-mono opacity-70">{viewScopeCounts[value]}</span>
             </button>
           ))}
         </div>
@@ -962,7 +1057,7 @@ function MiddlePanel({
       </div>
 
       <LibraryFiltersBar
-        skills={skills}
+        skills={baseSkills}
         value={libraryFilters}
         onChange={onLibraryFiltersChange}
         onReset={onClearFilters}
@@ -1029,13 +1124,6 @@ function MiddlePanel({
                   Head to Discover to find skills.
                 </p>
               </>
-            ) : activeFilter === "favorites" ? (
-              <>
-                <p className="text-muted text-[12px]">No favorites yet.</p>
-                <p className="text-muted text-[12px] mt-1">
-                  Click the star on any skill to save it here.
-                </p>
-              </>
             ) : (
               <>
                 <p className="text-muted text-[12px]">
@@ -1077,6 +1165,14 @@ function MiddlePanel({
             >
               <StarIcon size={12} filled={allSelectedFavorited} />
               <span>{allSelectedFavorited ? "已收藏" : "收藏"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={onBulkLinkSource}
+              className="skillbox-bulk-action"
+              title="为所选 Skill 关联同一个来源仓库"
+            >
+              <span>关联来源</span>
             </button>
             {/* Adapt to Agent */}
             <div className="relative" ref={agentDropdownRef}>
@@ -1440,6 +1536,7 @@ function MigrationDialog({
             <h3>导出完成</h3>
             <p>已打包 {state.result.skillCount} 个 Skill</p>
             <code data-no-localize>{state.result.filePath}</code>
+            <div className="skillbox-support-after-success"><SupportAuthorButton /></div>
           </div>
         )}
 
@@ -1458,6 +1555,9 @@ function MigrationDialog({
                 <summary>{state.result.errors.length} 个失败项</summary>
                 {state.result.errors.map((error) => <p key={error}>{error}</p>)}
               </details>
+            )}
+            {state.result.imported > 0 && state.result.errors.length === 0 && (
+              <div className="skillbox-support-after-success"><SupportAuthorButton /></div>
             )}
           </div>
         )}
@@ -1644,6 +1744,10 @@ interface RightPanelProps {
   onSkillRemoved: (result: SkillRemovalResult) => void
   onSkillChanged: () => Promise<void>
   onClose: () => void
+  onOpenHistory: () => void
+  onOpenSource: () => void
+  onManageSources: () => void
+  onOpenUpdate: () => void
   availableAgents: DetectedAgent[]
   onToggleCollection: (collectionName: string, skill: InstalledSkill) => void
   onCreateCollection: () => void
@@ -1659,11 +1763,16 @@ function RightPanel({
   onSkillRemoved,
   onSkillChanged,
   onClose,
+  onOpenHistory,
+  onOpenSource,
+  onManageSources,
+  onOpenUpdate,
   availableAgents,
   onToggleCollection,
   onCreateCollection,
 }: RightPanelProps) {
   const { translate } = useLocalization()
+  const skillAliases = useDisplayAliases().skill
   const [editMode, setEditMode] = useState(false)
   const [supportingPreview, setSupportingPreview] = useState("")
   const [selectedSupportingFile, setSelectedSupportingFile] = useState<string | null>(null)
@@ -1676,6 +1785,11 @@ function RightPanel({
   const [versionSyncPath, setVersionSyncPath] = useState<string | null>(null)
   const [bindingError, setBindingError] = useState<string | null>(null)
   const [showBackToTop, setShowBackToTop] = useState(false)
+  const translationState = useSkillTranslation(
+    content,
+    skill?.description,
+    skill?.canonicalPath ?? "",
+  )
   const editorRef = useRef<SkillEditorHandle | null>(null)
   const panelRef = useRef<HTMLDivElement | null>(null)
   const detailScrollRef = useRef<HTMLDivElement | null>(null)
@@ -1713,6 +1827,7 @@ function RightPanel({
 
     const handleOutsidePointerDown = (event: PointerEvent) => {
       if (event.target instanceof Element && event.target.closest(".skillbox-skill-row")) return
+      if (event.target instanceof Element && event.target.closest(".skillbox-modal-backdrop")) return
       if (event.target instanceof Node && !panelRef.current?.contains(event.target)) {
         onClose()
       }
@@ -1853,7 +1968,7 @@ function RightPanel({
         setBoundAgents((current) => installed
           ? Array.from(new Set([...current, agent.displayName]))
           : current.filter((name) => name !== agent.displayName))
-        setBindingError(`${agent.displayName} 适配失败，请重试`)
+        setBindingError(`${agent.displayName} 适配失败：${error instanceof Error ? error.message : String(error)}`)
       } else {
         setBindingError("适配已生效，但列表刷新失败")
       }
@@ -1871,15 +1986,23 @@ function RightPanel({
     setBindingError(null)
     setVersionSyncPath(mismatch.agentPath)
     try {
-      await electronAPI.syncAgentCopyToMaster(
+      const result = await electronAPI.syncAgentCopyToMaster(
         skill.name,
+        skill.path,
         mismatch.agentName,
         mismatch.agentPath,
       )
-      await onSkillChanged()
+      try {
+        await onSkillChanged()
+      } catch (error) {
+        console.error("Failed to refresh skill list after sync:", error)
+        setBindingError(`${mismatch.agentDisplayName} 已同步，但列表刷新失败，请手动刷新`)
+        return
+      }
+      if (result.warning) setBindingError(`同步已完成，但${result.warning}`)
     } catch (error) {
       console.error("Failed to sync agent copy to master:", error)
-      setBindingError(`${mismatch.agentDisplayName} 同步失败，请重试`)
+      setBindingError(`${mismatch.agentDisplayName} 同步失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setVersionSyncPath(null)
     }
@@ -1909,9 +2032,8 @@ function RightPanel({
         <div className="flex items-center justify-between gap-4 border-b border-border px-8 py-5">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h1 data-no-localize title={skill.name} className="min-w-0 truncate text-xl font-bold text-foreground">{skill.name}</h1>
+              <h1 data-no-localize className="skillbox-detail-title text-xl font-bold text-foreground">{skill.name}</h1>
               <CopySkillName name={skill.name} />
-              <SourceBadge sourceType={skill.sourceType} />
             </div>
             <p className="mt-1 text-[12px] text-muted">
               Editing raw `SKILL.md`
@@ -1961,23 +2083,41 @@ function RightPanel({
           <div className="px-8 py-6">
           {/* Header */}
           <div className="mb-6">
-            <div className="flex items-start justify-between gap-3 mb-2">
-              <div className="flex flex-1 items-center gap-2 min-w-0">
-                <h1 data-no-localize title={skill.name} className="min-w-0 text-xl font-bold text-foreground truncate">{skill.name}</h1>
-                <CopySkillName name={skill.name} />
-                <SourceBadge sourceType={skill.sourceType} />
+            <div className="mb-2 flex flex-col gap-3">
+              <div className="flex items-start justify-between gap-4">
+                <div className="skillbox-detail-heading">
+                  <AliasTitle
+                    name={skill.name}
+                    alias={skillAliases[skill.canonicalPath]}
+                    onSave={(value) => void setSkillAlias(skill.canonicalPath, value)}
+                    className="skillbox-detail-title text-xl font-bold text-foreground"
+                  />
+                  <CopySkillName name={skill.name} label="Skill 名称" />
+                </div>
+                <button onClick={onClose} title="关闭详情" aria-label="关闭详情" className="skillbox-detail-close shrink-0">×</button>
               </div>
 
               {/* Action buttons */}
-              <div className="flex items-center gap-1.5 flex-shrink-0">
+              <div className="flex w-full flex-wrap items-center gap-2">
                 <button
-                  onClick={onClose}
-                  title="Close"
-                  aria-label="Close"
-                  className="skillbox-detail-close"
+                  type="button"
+                  onClick={onOpenHistory}
+                  className="skillbox-detail-utility-action"
                 >
-                  ×
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+                  历史版本
                 </button>
+                {skill.hasLinkedSource && (
+                  <button
+                    type="button"
+                    onClick={onOpenUpdate}
+                    className="skillbox-detail-update-action"
+                  >
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.4 5.7"/><path d="M20 4v7h-7"/></svg>
+                    检查更新
+                  </button>
+                )}
+                <SkillTranslationAction state={translationState} />
                 {/* View/Edit toggle */}
                 {isLocalSkill && content && (
                   <div className="flex items-center rounded-lg border border-border bg-surface overflow-hidden text-[12px]">
@@ -2023,9 +2163,12 @@ function RightPanel({
               </div>
             </div>
 
-            {skill.description && (
-              <p data-no-localize className="text-sm text-muted mb-3">{skill.description}</p>
+            {translationState.visibleDescription && (
+              <p data-no-localize className="text-sm text-muted mb-3">
+                {translationState.visibleDescription}
+              </p>
             )}
+            <SkillTranslationStatus state={translationState} />
             <div className="flex items-center gap-1.5">
               <AgentLogoRow agents={adaptableBoundAgents} size={16} />
             </div>
@@ -2125,14 +2268,19 @@ function RightPanel({
                 supporting files: {supportingFiles.length}
               </span>
             </div>
-            {skill.source && (
-              <p className="text-[12px] text-muted font-mono mt-2">
-                {skill.source}
-              </p>
-            )}
-            <p className="text-[12px] text-muted font-mono mt-2 break-all">
-              {skill.canonicalPath}
-            </p>
+            <section className="skillbox-detail-source" aria-label="更新来源">
+              <div className="skillbox-detail-source__head">
+                <div><strong>更新来源</strong><small>与 Agent 启用状态无关</small></div>
+                <button type="button" onClick={onOpenSource} className="skillbox-detail-utility-action">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1 0l3-3a5 5 0 0 0-7.1-7.1l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.1 0l-3 3a5 5 0 0 0 7.1 7.1l1.7-1.7"/></svg>
+                  {skill.hasLinkedSource ? "更改来源" : "关联来源"}
+                </button>
+              </div>
+              <p>{skill.hasLinkedSource ? "已关联，可检查更新" : skill.source ? "发现来源线索，尚未关联更新" : "尚未关联更新来源"}</p>
+              {skill.source && <code data-no-localize>{skill.source}</code>}
+              <div className="skillbox-detail-source__location"><span>Skill 所在目录</span><code data-no-localize>{skill.canonicalPath}</code></div>
+              <button type="button" className="skillbox-detail-source__manage" onClick={onManageSources}>管理全部 Skill 来源</button>
+            </section>
             <div className="mt-3">
               <div className="mb-2 flex items-center justify-between">
                 <p className="text-[11px] uppercase tracking-widest text-muted">Collections</p>
@@ -2174,8 +2322,8 @@ function RightPanel({
           {/* Content: View or Edit mode */}
           {contentLoading ? (
             <p className="text-sm text-muted animate-fade-in">Loading content...</p>
-          ) : content ? (
-            <MemoizedMarkdown content={content} />
+          ) : translationState.visibleContent ? (
+            <MemoizedMarkdown content={translationState.visibleContent} />
           ) : (
             <p className="text-sm text-muted">
               Skill content not available. This skill may not have a SKILL.md file.
@@ -2418,6 +2566,7 @@ function CollectionDialog({
 // --------------------------------------------------------------------------
 
 export function Home() {
+  const mcpLibrary = useMcpLibrary()
   const { translate } = useLocalization()
   const [agents, setAgents] = useState<DetectedAgent[]>([])
   const [skills, setSkillsState] = useState<InstalledSkill[]>([])
@@ -2430,10 +2579,24 @@ export function Home() {
   const deferredSearchQuery = useDeferredValue(searchQuery)
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
   const [activeFilter, setActiveFilter] = useState<"all" | "favorites">("all")
+  const [favTypeFilter, setFavTypeFilter] = useState<"all" | "skills" | "mcp">("all")
+
+  useEffect(() => { setSearchQuery("") }, [activeFilter])
+
+  // Deep-link support: the dashboard sidebar's 收藏 entry navigates here with
+  // { filter: "favorites" } in location state.
+  const location = useLocation()
+  useEffect(() => {
+    if ((location.state as { filter?: string } | null)?.filter === "favorites") {
+      setActiveFilter("favorites")
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [scopeFilter, setScopeFilter] = useState<SkillScopeFilter>("all")
   const [selectedProject, setSelectedProject] = useState<string | null>(null)
   const [favorites, setFavorites] = useState<Set<string>>(new Set())
   const [selectedSkillPath, setSelectedSkillPath] = useState<string | null>(null)
+  const [selectedFavoriteMcpName, setSelectedFavoriteMcpName] = useState<string | null>(null)
   const [selectedSkillName, setSelectedSkillName] = useState<string | null>(null)
   const [skillContent, setSkillContent] = useState<string | null>(null)
   const [contentLoading, setContentLoading] = useState(false)
@@ -2459,6 +2622,14 @@ export function Home() {
   const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null)
   const [bulkAgentBusy, setBulkAgentBusy] = useState<string | null>(null)
   const [showScanSources, setShowScanSources] = useState(false)
+  const [sourceDialogPaths, setSourceDialogPaths] = useState<string[]>([])
+  const [showVersionHistory, setShowVersionHistory] = useState(false)
+  const [showSkillUpdate, setShowSkillUpdate] = useState(false)
+  const [checkingLinkedSources, setCheckingLinkedSources] = useState(false)
+  const [showBulkCheckDialog, setShowBulkCheckDialog] = useState(false)
+  const [bulkCheckSkills, setBulkCheckSkills] = useState<InstalledSkill[]>([])
+  const [bulkCheckLoadError, setBulkCheckLoadError] = useState(false)
+  const [updateSkillTarget, setUpdateSkillTarget] = useState<InstalledSkill | null>(null)
   const skillListRef = useRef<HTMLDivElement>(null)
   const contentCacheRef = useRef(new Map<string, string | null>())
   const supportingFilesCacheRef = useRef(
@@ -2497,6 +2668,10 @@ export function Home() {
     return coverage
   }, [skills])
   const selectedSkillForDisplay = selectedSkill
+  const sourceDialogSkills = useMemo(
+    () => skills.filter((skill) => sourceDialogPaths.includes(skill.canonicalPath)),
+    [skills, sourceDialogPaths],
+  )
 
   useEffect(() => {
     if (selectedSkillPath && selectedSkill && selectedSkill.canonicalPath !== selectedSkillPath) {
@@ -2539,6 +2714,9 @@ export function Home() {
       contentCacheRef.current.clear()
       supportingFilesCacheRef.current.clear()
       setSkills(updatedSkills)
+      electronAPI.settingsGet("collections.skills", {} as Record<string, string[]>)
+        .then((savedCollections) => setCollections(savedCollections || {}))
+        .catch(() => {})
     })
 
     return cleanup
@@ -2571,6 +2749,7 @@ export function Home() {
 
     let cancelled = false
     const cacheKey = selectedSkill.canonicalPath
+    const skillPath = selectedSkill.path
     const hasCachedContent = contentCacheRef.current.has(cacheKey)
     const cachedContent = contentCacheRef.current.get(cacheKey) ?? null
     const cachedFiles = supportingFilesCacheRef.current.get(cacheKey)
@@ -2590,10 +2769,10 @@ export function Home() {
         const [raw, files] = await Promise.all([
           hasCachedContent
             ? Promise.resolve(cachedContent)
-            : electronAPI.readSkillContent(selectedSkill.path),
+            : electronAPI.readSkillContent(skillPath),
           cachedFiles
             ? Promise.resolve(cachedFiles)
-            : electronAPI.listSupportingFiles(selectedSkill.path),
+            : electronAPI.listSupportingFiles(skillPath),
         ])
         if (!cancelled) {
           setSkillContent(raw || null)
@@ -2647,6 +2826,12 @@ export function Home() {
 
   // Filter skills by selected agent and search query
   const filteredSkills = useMemo(() => {
+    if (activeFilter === "favorites") {
+      const query = deferredSearchQuery.toLowerCase().trim()
+      return favTypeFilter === "mcp" ? [] : skills.filter((skill) =>
+        favorites.has(skill.name) && (!query || `${skill.name} ${skill.description} ${skill.canonicalPath}`.toLowerCase().includes(query)),
+      )
+    }
     let result = skills
 
     if (scopeFilter !== "all") {
@@ -2655,10 +2840,6 @@ export function Home() {
 
     if (selectedProject) {
       result = result.filter((skill) => skill.projectNames.includes(selectedProject))
-    }
-
-    if (activeFilter === "favorites") {
-      result = result.filter((s) => favorites.has(s.name))
     }
 
     if (selectedCollection) {
@@ -2698,6 +2879,7 @@ export function Home() {
     collections,
     activeFilter,
     favorites,
+    favTypeFilter,
   ])
 
   const scopeCounts = useMemo<Record<SkillScopeFilter, number>>(() => ({
@@ -2727,15 +2909,34 @@ export function Home() {
 
   // Count favorites that are currently installed (orphan favorites are
   // preserved in the DB but not shown in the sidebar count).
-  const installedFavoritesCount = useMemo(
-    () => skills.reduce((n, s) => (favorites.has(s.name) ? n + 1 : n), 0),
-    [skills, favorites],
-  )
+  const installedFavoritesCount = useMemo(() => {
+    const skillCount = skills.reduce((n, s) => (favorites.has(s.name) ? n + 1 : n), 0)
+    const installedMcpNames = new Set((mcpLibrary?.servers ?? []).map((server) => server.name))
+    const mcpCount = [...favorites].filter(
+      (name) => name.startsWith("mcp:") && installedMcpNames.has(name.slice(4)),
+    ).length
+    return skillCount + mcpCount
+  }, [skills, favorites, mcpLibrary])
 
   const handleSelectSkill = useCallback((skill: InstalledSkill) => {
+    setSelectedFavoriteMcpName(null)
     setSelectedSkillName(skill.name)
     setSelectedSkillPath((current) => current === skill.canonicalPath ? null : skill.canonicalPath)
   }, [])
+
+  const handleSelectFavoriteMcp = useCallback((name: string | null) => {
+    if (name) setSelectedSkillPath(null)
+    setSelectedFavoriteMcpName(name)
+  }, [])
+
+  const handleFavTypeFilterChange = useCallback((value: "all" | "skills" | "mcp") => {
+    setSelectedFavoriteMcpName(null)
+    setFavTypeFilter(value)
+  }, [])
+
+  useEffect(() => {
+    if (activeFilter !== "favorites") setSelectedFavoriteMcpName(null)
+  }, [activeFilter])
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true)
@@ -2847,6 +3048,27 @@ export function Home() {
     }
   }, [migrationDialog])
 
+  const handleToggleMcpFavorite = useCallback(async (serverName: string) => {
+    const key = `mcp:${serverName}`
+    setFavorites((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+    try {
+      await electronAPI.favoritesToggle(key)
+      notifyFavoritesChanged()
+    } catch {
+      setFavorites((prev) => {
+        const next = new Set(prev)
+        if (next.has(key)) next.delete(key)
+        else next.add(key)
+        return next
+      })
+    }
+  }, [])
+
   const handleToggleFavorite = useCallback(
     async (skill: InstalledSkill, e: React.MouseEvent) => {
       e.stopPropagation()
@@ -2860,6 +3082,7 @@ export function Home() {
       })
       try {
         const isFavoritedAfter = await electronAPI.favoritesToggle(name)
+        notifyFavoritesChanged()
         setFavorites((prev) => {
           const next = new Set(prev)
           if (isFavoritedAfter) next.add(name)
@@ -2885,7 +3108,6 @@ export function Home() {
     setSearchQuery("")
     setSelectedAgent(null)
     setSelectedCollection(null)
-    setActiveFilter("all")
     setScopeFilter("all")
     setSelectedProject(null)
   }, [])
@@ -2913,9 +3135,39 @@ export function Home() {
   }, [])
 
   const handleSkillChanged = useCallback(async () => {
+    contentCacheRef.current.clear()
+    supportingFilesCacheRef.current.clear()
     const installedSkills = await electronAPI.rescanSkills()
     setSkills(installedSkills)
   }, [])
+
+  const loadLinkedSources = useCallback(async () => {
+    setCheckingLinkedSources(true)
+    setBulkCheckLoadError(false)
+    try {
+      const linkedSources = await electronAPI.listLinkedSkillSources(skills.map((skill) => ({
+        name: skill.name,
+        canonicalPath: skill.canonicalPath,
+      })))
+      const byPath = new Map(linkedSources.map((source) => [source.canonicalPath, source.source]))
+      setBulkCheckSkills(skills.filter((skill) => byPath.has(skill.canonicalPath)).map((skill) => ({
+        ...skill,
+        source: byPath.get(skill.canonicalPath) ?? skill.source,
+        hasLinkedSource: true,
+      })))
+    } catch (error) {
+      console.error("Failed to scan linked Skill sources:", error)
+      setBulkCheckLoadError(true)
+    } finally {
+      setCheckingLinkedSources(false)
+    }
+  }, [skills])
+
+  const handleCheckLinkedUpdates = useCallback(() => {
+    setBulkCheckSkills(skills.filter((skill) => skill.hasLinkedSource))
+    setShowBulkCheckDialog(true)
+    void loadLinkedSources()
+  }, [skills, loadLinkedSources])
 
   const persistCollections = useCallback(async (next: Record<string, string[]>) => {
     setCollections(next)
@@ -3179,6 +3431,11 @@ export function Home() {
     }
   }, [multiSelected, skills])
 
+  const handleBulkLinkSource = useCallback(() => {
+    if (multiSelected.size === 0) return
+    setSourceDialogPaths(Array.from(multiSelected))
+  }, [multiSelected])
+
   const handleBulkAdaptToAgent = useCallback(async (agent: DetectedAgent) => {
     const selectedSkills = skills.filter((skill) => multiSelected.has(skill.canonicalPath))
     const toAdapt = selectedSkills.filter((skill) =>
@@ -3430,8 +3687,10 @@ export function Home() {
         onImportPackage={handleImportPackage}
         onExportPackage={handleExportPackage}
         onRefresh={handleRefresh}
+        onCheckLinkedUpdates={() => void handleCheckLinkedUpdates()}
         onOpenScanSources={() => setShowScanSources(true)}
         refreshing={refreshing}
+        checkingLinkedSources={checkingLinkedSources}
         migrationBusy={migrationBusy}
         dragSkill={dragSkill}
         onDragSkillStart={handleDragSkillStart}
@@ -3444,10 +3703,16 @@ export function Home() {
         onMultiSelectClear={handleMultiSelectClear}
         favorites={favorites}
         onToggleFavorite={handleToggleFavorite}
+        onToggleMcpFavorite={handleToggleMcpFavorite}
+        selectedFavoriteMcpName={selectedFavoriteMcpName}
+        onSelectFavoriteMcp={handleSelectFavoriteMcp}
+        favTypeFilter={favTypeFilter}
+        onFavTypeFilterChange={handleFavTypeFilterChange}
         collections={collections}
         onBulkAddToCollection={handleBulkAddToCollection}
         onBulkCreateCollection={handleBulkCreateCollection}
         onBulkFavorite={handleBulkFavorite}
+        onBulkLinkSource={handleBulkLinkSource}
         onBulkAdaptToAgent={handleBulkAdaptToAgent}
         bulkAgentBusy={bulkAgentBusy}
         onBulkDelete={handleBulkDelete}
@@ -3466,6 +3731,10 @@ export function Home() {
           onSkillRemoved={handleSkillRemoved}
           onSkillChanged={handleSkillChanged}
           onClose={() => setSelectedSkillPath(null)}
+          onOpenHistory={() => setShowVersionHistory(true)}
+          onOpenSource={() => setSourceDialogPaths([selectedSkillForDisplay.canonicalPath])}
+          onManageSources={() => setSourceDialogPaths(skills.map((skill) => skill.canonicalPath))}
+          onOpenUpdate={() => setShowSkillUpdate(true)}
           availableAgents={agents}
           onToggleCollection={handleToggleCollection}
           onCreateCollection={handleCreateCollection}
@@ -3505,6 +3774,60 @@ export function Home() {
         onClose={() => setShowScanSources(false)}
         onRescan={handleRefresh}
       />
+
+      <SkillSourceDialog
+        open={sourceDialogSkills.length > 0}
+        skills={sourceDialogSkills}
+        onClose={() => setSourceDialogPaths([])}
+        onLinked={async () => {
+          await handleSkillChanged()
+          setMultiSelected(new Set())
+          setLastMultiSelectIndex(null)
+        }}
+      />
+
+      <SkillVersionHistory
+        open={showVersionHistory}
+        skill={selectedSkillForDisplay}
+        onClose={() => setShowVersionHistory(false)}
+        onRestored={handleSkillChanged}
+      />
+
+      <SkillUpdateDialog
+        open={showSkillUpdate}
+        skill={updateSkillTarget ?? selectedSkillForDisplay}
+        onClose={() => { setShowSkillUpdate(false); setUpdateSkillTarget(null) }}
+        onChangeSource={() => {
+          const target = updateSkillTarget ?? selectedSkillForDisplay
+          setShowSkillUpdate(false)
+          setUpdateSkillTarget(null)
+          if (target) setSourceDialogPaths([target.canonicalPath])
+        }}
+        onUpdated={handleSkillChanged}
+      />
+
+      {showBulkCheckDialog && (
+        <BulkSkillUpdateDialog
+          skills={bulkCheckSkills}
+          loading={checkingLinkedSources}
+          loadError={bulkCheckLoadError}
+          onRetryLoad={() => void loadLinkedSources()}
+          onClose={() => setShowBulkCheckDialog(false)}
+          onLinkSources={() => {
+            setShowBulkCheckDialog(false)
+            setSourceDialogPaths(skills.map((skill) => skill.canonicalPath))
+          }}
+          onChangeSource={(skill) => {
+            setShowBulkCheckDialog(false)
+            setSourceDialogPaths([skill.canonicalPath])
+          }}
+          onOpenUpdate={(skill) => {
+            setShowBulkCheckDialog(false)
+            setUpdateSkillTarget(skill)
+            setShowSkillUpdate(true)
+          }}
+        />
+      )}
 
       <CollectionDialog
         open={collectionDialog.open}

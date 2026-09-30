@@ -1,6 +1,7 @@
 interface InstalledMarketplaceSkill {
   name: string
   source?: string
+  hasLinkedSource?: boolean
 }
 
 interface CatalogMarketplaceSkill {
@@ -10,8 +11,10 @@ interface CatalogMarketplaceSkill {
 }
 
 export interface InstalledMarketplaceState {
+  count: number
   names: Set<string>
   sourceKeys: Set<string>
+  legacySourceNames: Set<string>
 }
 
 interface InstallProgress {
@@ -38,7 +41,7 @@ function normalizeSkillName(value: string): string {
   return value
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9._]+/g, "-")
+    .replace(/[^\p{L}\p{N}._]+/gu, "-")
     .replace(/^-+|-+$/g, "")
 }
 
@@ -56,13 +59,18 @@ export function mergeInstallTask<T extends InstallTask>(
 export function createInstalledMarketplaceState(
   installed: InstalledMarketplaceSkill[],
 ): InstalledMarketplaceState {
+  const linked = installed.filter((skill) => skill.hasLinkedSource !== false && skill.source?.trim())
   return {
+    count: installed.length,
     names: new Set(installed.map((skill) => normalizeSkillName(skill.name))),
     sourceKeys: new Set(
-      installed
+      linked
         .map((skill) => skill.source?.trim().toLowerCase())
         .filter((source): source is string => Boolean(source)),
     ),
+    legacySourceNames: new Set(linked
+      .filter((skill) => skill.source?.trim().split("/").length === 2)
+      .map((skill) => marketplaceKey(skill.source!.trim(), normalizeSkillName(skill.name)))),
   }
 }
 
@@ -70,11 +78,17 @@ export function isMarketplaceSkillInstalled(
   installed: InstalledMarketplaceState,
   skill: CatalogMarketplaceSkill,
 ): boolean {
-  return (
-    installed.names.has(normalizeSkillName(skill.name)) ||
-    installed.names.has(normalizeSkillName(skill.skillId)) ||
-    installed.sourceKeys.has(marketplaceKey(skill.source, skill.skillId))
-  )
+  const key = marketplaceKey(skill.source, skill.skillId)
+  return installed.sourceKeys.has(key) ||
+    installed.legacySourceNames.has(marketplaceKey(skill.source, normalizeSkillName(skill.name)))
+}
+
+export function hasSameNameMarketplaceSkill(
+  installed: InstalledMarketplaceState,
+  skill: CatalogMarketplaceSkill,
+): boolean {
+  return !isMarketplaceSkillInstalled(installed, skill) &&
+    (installed.names.has(normalizeSkillName(skill.name)) || installed.names.has(normalizeSkillName(skill.skillId)))
 }
 
 export function formatInstallProgress(progress: InstallProgress): string {

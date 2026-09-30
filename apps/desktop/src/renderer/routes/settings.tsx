@@ -1,6 +1,11 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
+import { useNavigate } from "react-router-dom"
+import { ThemeToggle } from "@skillbox/ui"
 import { electronAPI } from "../lib/electron-api"
 import { useLocalization, type AppLocale } from "../lib/localization"
+import { OPEN_SETTINGS_DIALOG } from "../components/skillbox-brand"
+import { AgentLogo } from "../components/agent-logo"
+import { SupportAuthorButton } from "../components/support-author"
 
 // ---------------------------------------------------------------------------
 // Setting row components
@@ -58,7 +63,10 @@ function SettingToggle({
         <p className="text-[12px] text-muted">{description}</p>
       </div>
       <button
+        type="button"
         onClick={() => onChange(!value)}
+        aria-pressed={value}
+        aria-label={label}
         className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
           value ? "bg-foreground" : "bg-border"
         }`}
@@ -73,12 +81,24 @@ function SettingToggle({
   )
 }
 
+function formatStorageSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
+}
+
 // ---------------------------------------------------------------------------
 // Settings page
 // ---------------------------------------------------------------------------
 
 export function Settings() {
+  const navigate = useNavigate()
   const { locale, setLocale } = useLocalization()
+  const [open, setOpen] = useState(false)
+  const dialogRef = useRef<HTMLElement>(null)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const returnFocusRef = useRef<HTMLElement | null>(null)
   // SQLite-backed settings
   const [installScope, setInstallScope] = useState("global")
   const [installMethod, setInstallMethod] = useState("symlink")
@@ -91,8 +111,20 @@ export function Settings() {
   const [detectedAgents, setDetectedAgents] = useState<DetectedAgent[]>([])
   const [appVersion, setAppVersion] = useState("")
   const [updateState, setUpdateState] = useState<UpdateState | null>(null)
+  const [mcpLibrary, setMcpLibrary] = useState<McpLibrary | null>(null)
+  const [versionStorage, setVersionStorage] = useState<SkillVersionStorageInfo | null>(null)
+  const [skillStorage, setSkillStorage] = useState<SkillStorageInfo | null>(null)
+  const [skillStorageBusy, setSkillStorageBusy] = useState(false)
+  const [skillStorageError, setSkillStorageError] = useState<string | null>(null)
+  const [versionStorageBusy, setVersionStorageBusy] = useState(false)
+  const [versionStorageError, setVersionStorageError] = useState<string | null>(null)
   const [checkingUpdates, setCheckingUpdates] = useState(false)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
+
+  const closeSettings = useCallback(() => {
+    setOpen(false)
+    window.setTimeout(() => returnFocusRef.current?.focus(), 0)
+  }, [])
 
   const loadSettings = useCallback(async () => {
     try {
@@ -120,19 +152,71 @@ export function Settings() {
   }, [])
 
   useEffect(() => {
-    loadSettings()
-  }, [loadSettings])
+    const handleOpen = () => {
+      returnFocusRef.current = document.activeElement as HTMLElement | null
+      setOpen(true)
+    }
+    window.addEventListener(OPEN_SETTINGS_DIALOG, handleOpen)
+    return () => window.removeEventListener(OPEN_SETTINGS_DIALOG, handleOpen)
+  }, [])
 
   useEffect(() => {
+    if (!open) return
+    setSettingsLoaded(false)
+    void loadSettings()
+  }, [loadSettings, open])
+
+  useEffect(() => {
+    if (!open) return
     electronAPI.detectAgents().then(setDetectedAgents).catch(() => {})
     electronAPI.appGetVersion().then(setAppVersion).catch(() => {})
     electronAPI.updatesGetState().then(setUpdateState).catch(() => {})
-    const cleanup = electronAPI.onUpdateState((state) => {
+    electronAPI.mcpListLibrary().then(setMcpLibrary).catch(() => {})
+    electronAPI.skillVersionStorageInfo().then(setVersionStorage).catch(() => {})
+    electronAPI.skillStorageInfo().then(setSkillStorage).catch((error) => {
+      setSkillStorageError(error instanceof Error ? error.message : "读取 Skill 存储位置失败")
+    })
+    const cleanupUpdate = electronAPI.onUpdateState((state) => {
       setUpdateState(state)
       setCheckingUpdates(state.status === "checking" || state.status === "downloading")
     })
-    return cleanup
-  }, [])
+    const cleanupMcp = electronAPI.onMcpUpdated(setMcpLibrary)
+    return () => {
+      cleanupUpdate()
+      cleanupMcp()
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    closeButtonRef.current?.focus()
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault()
+        closeSettings()
+        return
+      }
+      if (event.key !== "Tab") return
+
+      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), select:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      )
+      if (!focusable?.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [closeSettings, open])
 
   async function saveSetting(key: string, value: unknown) {
     try {
@@ -167,14 +251,80 @@ export function Settings() {
     }
   }
 
-  return (
-    <div className="p-8">
-      <h2 className="text-xl font-bold text-foreground mb-1">Settings</h2>
-      <p className="text-[12px] text-muted mb-6">
-        Configure your SkillsGate Desktop preferences.
-      </p>
+  async function handleChooseVersionStorage() {
+    setVersionStorageBusy(true)
+    setVersionStorageError(null)
+    try {
+      const next = await electronAPI.chooseSkillVersionStorage()
+      if (next) setVersionStorage(next)
+    } catch (err) {
+      console.error("Failed to move skill version storage:", err)
+      setVersionStorageError(err instanceof Error ? err.message : "迁移版本仓库失败")
+    } finally {
+      setVersionStorageBusy(false)
+    }
+  }
 
-      <div className="flex flex-col gap-6 max-w-lg">
+  async function handleChooseSkillStorage() {
+    setSkillStorageBusy(true)
+    setSkillStorageError(null)
+    try {
+      const next = await electronAPI.chooseSkillStorage()
+      if (next) setSkillStorage(next)
+    } catch (err) {
+      setSkillStorageError(err instanceof Error ? err.message : "迁移 Skill 目录失败")
+    } finally {
+      setSkillStorageBusy(false)
+    }
+  }
+
+  async function handleVersionRetention(value: string) {
+    setVersionStorageBusy(true)
+    setVersionStorageError(null)
+    try {
+      setVersionStorage(await electronAPI.setSkillVersionRetention(Number(value)))
+    } catch (err) {
+      console.error("Failed to change skill version retention:", err)
+      setVersionStorageError(err instanceof Error ? err.message : "修改保留数量失败")
+    } finally {
+      setVersionStorageBusy(false)
+    }
+  }
+
+  if (!open) return null
+
+  return (
+    <div
+      className="skillbox-settings-overlay"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) closeSettings()
+      }}
+    >
+      <section
+        ref={dialogRef}
+        className="skillbox-settings-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="skillbox-settings-title"
+      >
+        <header className="skillbox-settings-panel__header">
+          <div>
+            <h2 id="skillbox-settings-title">Settings</h2>
+            <p>Manage skills, MCP connections, scanning, and app updates.</p>
+          </div>
+          <button
+            ref={closeButtonRef}
+            type="button"
+            onClick={closeSettings}
+            aria-label="Close settings"
+            title="Close settings"
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="skillbox-settings-panel__body">
+          <div className="flex flex-col gap-6">
         <section>
           <h3 className="text-sm font-semibold text-foreground mb-3">
             Language
@@ -191,10 +341,62 @@ export function Settings() {
           />
         </section>
 
+        <section>
+          <h3 className="text-sm font-semibold text-foreground mb-3">
+            Theme
+          </h3>
+          <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-surface">
+            <div>
+              <p className="text-sm text-foreground">Appearance</p>
+              <p className="text-[12px] text-muted">Switch between light and dark mode</p>
+            </div>
+            <ThemeToggle />
+          </div>
+        </section>
+
+        <section>
+          <h3 className="text-sm font-semibold text-foreground mb-3">
+            MCP management
+          </h3>
+          <div className="skillbox-settings-mcp">
+            <div className="skillbox-settings-mcp__copy">
+              <p>Local MCP overview</p>
+              <span>MCP settings are stored by each Agent. Skillbox scans these local files and creates a backup before every change.</span>
+            </div>
+            <div className="skillbox-settings-mcp__metrics">
+              <span><strong data-no-localize>{mcpLibrary?.servers.length ?? "—"}</strong>MCP servers</span>
+              <span><strong data-no-localize>{mcpLibrary?.agents.filter((agent) => agent.installed).length ?? "—"}</strong>installed Agents</span>
+              <span><strong data-no-localize>{mcpLibrary?.servers.reduce((total, server) => total + server.connections.length, 0) ?? "—"}</strong>connections</span>
+            </div>
+            <div className="skillbox-settings-mcp__agents">
+              {mcpLibrary?.agents.filter((agent) => agent.installed).map((agent) => (
+                <span key={agent.id}>
+                  <AgentLogo name={agent.displayName} size={16} />
+                  {agent.displayName}
+                </span>
+              ))}
+              {mcpLibrary && mcpLibrary.agents.every((agent) => !agent.installed) && (
+                <span>No supported MCP Agent detected</span>
+              )}
+            </div>
+            <button
+              type="button"
+              className="skillbox-settings-mcp__button"
+              onClick={() => {
+                closeSettings()
+                navigate("/mcp")
+              }}
+            >
+              Open MCP management
+              <span aria-hidden="true">→</span>
+            </button>
+          </div>
+        </section>
+
         {/* Install preferences */}
         <section>
           <h3 className="text-sm font-semibold text-foreground mb-3">
-            Installation
+            Skill installation
           </h3>
           <div className="flex flex-col gap-3">
             {settingsLoaded ? (
@@ -267,7 +469,7 @@ export function Settings() {
             {settingsLoaded && (
               <SettingToggle
                 label="Telemetry"
-                description="Send anonymous usage data to help improve SkillsGate"
+                description="Send anonymous usage data to help improve Skillbox"
                 value={telemetryEnabled}
                 onChange={(v) => {
                   setTelemetryEnabled(v)
@@ -325,6 +527,106 @@ export function Settings() {
           </div>
         </section>
 
+        <section>
+          <h3 className="text-sm font-semibold text-foreground mb-3">Shared Skill storage</h3>
+          <div className="rounded-lg border border-border bg-surface p-4">
+            <div className="flex items-start justify-between gap-5 max-sm:flex-col">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-foreground">Storage location</p>
+                <p className="mt-1 text-[12px] leading-5 text-muted">
+                  New and marketplace Skills use this location. The selected folder gets a Skillbox Skills subfolder; existing Skills move automatically and Agent paths keep working.
+                </p>
+                <code data-no-localize className="mt-3 block break-all rounded-md border border-border bg-background px-3 py-2 text-[11px] leading-5 text-foreground">
+                  {skillStorage?.path || (locale === "zh-CN" ? "正在读取…" : "Loading...")}
+                </code>
+                {skillStorage?.isLinked && (
+                  <p className="mt-2 break-all text-[11px] leading-5 text-muted">
+                    Standard path: <span data-no-localize>{skillStorage.compatibilityPath}</span>
+                  </p>
+                )}
+              </div>
+              <div className="flex shrink-0 gap-2 max-sm:w-full">
+                <button type="button" onClick={() => void handleChooseSkillStorage()} disabled={skillStorageBusy}
+                  className="min-h-11 whitespace-nowrap rounded-lg border border-border px-4 text-[12px] font-medium text-foreground hover:bg-surface-hover disabled:opacity-40">
+                  {skillStorageBusy ? "Moving..." : "Change location"}
+                </button>
+                <button type="button" onClick={() => void electronAPI.openSkillStorage()}
+                  className="min-h-11 whitespace-nowrap rounded-lg px-4 text-[12px] text-muted hover:bg-surface-hover hover:text-foreground">
+                  Open folder
+                </button>
+              </div>
+            </div>
+            {(skillStorageError || skillStorage?.warning) && (
+              <p role="alert" className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-600">
+                {skillStorageError || skillStorage?.warning}
+              </p>
+            )}
+          </div>
+        </section>
+
+        {/* Skill version history */}
+        <section>
+          <h3 className="text-sm font-semibold text-foreground mb-3">
+            Skill version history
+          </h3>
+          <div className="flex flex-col gap-3">
+            <div className="rounded-lg border border-border bg-surface p-4">
+              <div className="flex items-start justify-between gap-5 max-sm:flex-col">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-foreground">External snapshot storage</p>
+                  <p className="mt-1 text-[12px] leading-5 text-muted">
+                    Snapshots stay outside Skill folders. Identical content is stored only once, and old versions are cleaned up automatically.
+                  </p>
+                  <code
+                    data-no-localize
+                    className="mt-3 block break-all rounded-md border border-border bg-background px-3 py-2 text-[11px] leading-5 text-foreground"
+                  >
+                    {versionStorage?.path || (locale === "zh-CN" ? "正在读取…" : "Loading...")}
+                  </code>
+                  <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-muted">
+                    <span><strong className="mr-1 text-foreground" data-no-localize>{versionStorage?.versionCount ?? "—"}</strong>snapshots</span>
+                    <span><strong className="mr-1 text-foreground" data-no-localize>{versionStorage ? formatStorageSize(versionStorage.sizeBytes) : "—"}</strong>used</span>
+                  </div>
+                </div>
+                <div className="flex shrink-0 gap-2 max-sm:w-full">
+                  <button
+                    type="button"
+                    onClick={() => void handleChooseVersionStorage()}
+                    disabled={versionStorageBusy}
+                    className="min-h-11 whitespace-nowrap rounded-lg border border-border px-4 text-[12px] font-medium text-foreground hover:bg-surface-hover disabled:opacity-40"
+                  >
+                    {versionStorageBusy ? "Moving..." : "Change location"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void electronAPI.openSkillVersionStorage()}
+                    className="min-h-11 whitespace-nowrap rounded-lg px-4 text-[12px] text-muted hover:bg-surface-hover hover:text-foreground"
+                  >
+                    Open folder
+                  </button>
+                </div>
+              </div>
+            </div>
+            <SettingSelect
+              label="Versions kept per Skill"
+              description="When the limit is lowered, the oldest snapshots are removed immediately"
+              value={String(versionStorage?.maxVersionsPerSkill ?? 20)}
+              options={[
+                { value: "10", label: "10" },
+                { value: "20", label: "20" },
+                { value: "50", label: "50" },
+                { value: "100", label: "100" },
+              ]}
+              onChange={(value) => void handleVersionRetention(value)}
+            />
+            {versionStorageError && (
+              <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-600">
+                {versionStorageError}
+              </p>
+            )}
+          </div>
+        </section>
+
         {/* Scan paths */}
         <section>
           <h3 className="text-sm font-semibold text-foreground mb-3">
@@ -334,7 +636,7 @@ export function Settings() {
             <div className="rounded-lg border border-border bg-surface p-3">
               <p className="text-sm text-foreground mb-1">Custom scan directories</p>
               <p className="text-[12px] text-muted mb-3">
-                SkillsGate will scan direct skill folders and project-local tool paths inside these roots.
+                Skillbox will scan direct skill folders and project-local tool paths inside these roots.
               </p>
               <div className="flex gap-2 mb-3">
                 <input
@@ -386,7 +688,7 @@ export function Settings() {
         {/* Target defaults */}
         <section>
           <h3 className="text-sm font-semibold text-foreground mb-3">
-            Default Targets
+            Skill default targets
           </h3>
           <div className="rounded-lg border border-border bg-surface p-3">
             <p className="text-sm text-foreground mb-1">Install targets</p>
@@ -413,7 +715,7 @@ export function Settings() {
         {/* Sync rules */}
         <section>
           <h3 className="text-sm font-semibold text-foreground mb-3">
-            Sync Rules
+            Skill sync rules
           </h3>
           <div className="rounded-lg border border-border bg-surface p-3">
             <p className="text-sm text-foreground mb-1">Mirror installs to additional targets</p>
@@ -437,19 +739,34 @@ export function Settings() {
           </div>
         </section>
 
+        <section>
+          <h3 className="text-sm font-semibold text-foreground mb-3">支持与维护</h3>
+          <div className="p-3 rounded-lg border border-border bg-surface">
+            <p className="text-[12px] text-muted mb-3">如果 Skillbox 帮到了你，欢迎自愿支持后续维护。</p>
+            <SupportAuthorButton />
+          </div>
+        </section>
+
         {/* About */}
         <section>
           <h3 className="text-sm font-semibold text-foreground mb-3">About</h3>
           <div className="p-3 rounded-lg border border-border bg-surface">
             <p className="text-sm text-foreground">
-              SkillsGate Desktop v{appVersion || "0.1.6"}
+              Skillbox v{appVersion || "0.1.6"}
             </p>
             <p className="text-[12px] text-muted mt-1">
-              Manage AI agent skills from your desktop.
+              Manage AI Agent skills and MCP connections from your desktop.
             </p>
           </div>
         </section>
-      </div>
+          </div>
+        </div>
+
+        <footer className="skillbox-settings-panel__footer">
+          <span>Changes are saved automatically.</span>
+          <button type="button" onClick={closeSettings}>Done</button>
+        </footer>
+      </section>
     </div>
   )
 }

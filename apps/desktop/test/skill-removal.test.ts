@@ -7,6 +7,8 @@ import {
   assertSafePathSegment,
   isPathInside,
   removeSkillPath,
+  resolveSkillRemovalRoots,
+  selectAgentSkillRemovalTargets,
   validateSkillRemovalRequest,
 } from "../src/main/skill-removal"
 
@@ -45,6 +47,67 @@ test("显示路径合法但母本越界时同样拒绝删除", () => {
       scope: "global",
     }],
   }, [root]), /授权范围之外/)
+})
+
+test("授权目录本身为 Junction 时，同时授权其真实位置", async () => {
+  const fixture = await fs.mkdtemp(path.join(os.tmpdir(), "skillbox-removal-root-link-"))
+  const physicalRoot = path.join(fixture, "physical", "skills")
+  const linkedRoot = path.join(fixture, "linked-skills")
+  await fs.mkdir(path.join(physicalRoot, "demo"), { recursive: true })
+  await fs.symlink(physicalRoot, linkedRoot, process.platform === "win32" ? "junction" : "dir")
+  try {
+    const request = {
+      name: "demo",
+      targets: [{
+        path: path.join(linkedRoot, "demo"),
+        canonicalPath: path.join(physicalRoot, "demo"),
+        scope: "global" as const,
+      }],
+    }
+    assert.throws(
+      () => validateSkillRemovalRequest(request, [linkedRoot]),
+      (error: unknown) => error instanceof Error && error.message.includes(path.join(physicalRoot, "demo")),
+    )
+    const roots = resolveSkillRemovalRoots([linkedRoot])
+    assert.deepEqual(roots, [linkedRoot, physicalRoot])
+    assert.doesNotThrow(() => validateSkillRemovalRequest(request, roots))
+    assert.throws(() => validateSkillRemovalRequest({
+      name: "demo",
+      targets: [{ ...request.targets[0], canonicalPath: path.join(fixture, "outside", "demo") }],
+    }, roots), /授权范围之外/)
+  } finally {
+    await fs.rm(fixture, { recursive: true, force: true })
+  }
+})
+
+test("关闭单个 Agent 适配时跳过无关 Agent 的旧路径，仍校验目标母本", () => {
+  const masterRoot = path.join(root, "master")
+  const agentRoot = path.join(root, "doubao")
+  const unrelatedRoot = path.join(root, "codex-old")
+  const master = path.join(masterRoot, "demo")
+  const binding = path.join(agentRoot, "demo")
+  const request = {
+    name: "demo",
+    targets: [
+      { path: master, canonicalPath: master, scope: "global" as const },
+      { path: path.join(unrelatedRoot, "demo"), canonicalPath: path.join(unrelatedRoot, "demo"), scope: "global" as const },
+      { path: binding, canonicalPath: master, scope: "global" as const },
+    ],
+  }
+
+  assert.throws(() => validateSkillRemovalRequest(request, [masterRoot, agentRoot]), /授权范围之外/)
+  const scoped = selectAgentSkillRemovalTargets(request, [agentRoot], [masterRoot])
+  assert.deepEqual(
+    validateSkillRemovalRequest(scoped, [masterRoot, agentRoot]).targets.map((target) => target.path),
+    [master, binding],
+  )
+  assert.throws(() => validateSkillRemovalRequest(
+    selectAgentSkillRemovalTargets({
+      name: "demo",
+      targets: [{ path: binding, canonicalPath: path.join(unrelatedRoot, "demo"), scope: "global" }],
+    }, [agentRoot], [masterRoot]),
+    [masterRoot, agentRoot],
+  ), /授权范围之外/)
 })
 
 test("拒绝空目录名、点目录和路径穿越，同时允许中文目录名", () => {

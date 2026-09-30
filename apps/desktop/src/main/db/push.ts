@@ -9,8 +9,8 @@ import {
   scanRemoteSkills,
   uploadSkillDir,
   deleteRemoteSkillDir,
+  type ScannedRemoteSkill,
 } from "./ssh"
-import { listInstalledSkillsInternal } from "../ipc-handlers"
 import { isPathInside } from "../skill-removal"
 
 const home = os.homedir()
@@ -47,6 +47,19 @@ export interface PushOptions {
   mirror: boolean
 }
 
+export interface PushDependencies {
+  localSkills: Array<{
+    scope: "global" | "project" | "custom"
+    canonicalPath: string
+    folderName: string
+    name: string
+  }>
+  storageRoot?: string
+  scanRemote?: (server: RemoteServer) => Promise<ScannedRemoteSkill[]>
+  upload?: typeof uploadSkillDir
+  delete?: typeof deleteRemoteSkillDir
+}
+
 function sha256(s: string): string {
   return crypto.createHash("sha256").update(s, "utf-8").digest("hex")
 }
@@ -67,13 +80,33 @@ function normalizeRemoteBase(p: string): string {
 export async function planPush(
   server: RemoteServer,
   options: PushOptions,
+  dependencies: PushDependencies,
 ): Promise<PushPreview> {
-  // 1. List local canonical skills (scope=global AND under CANONICAL_SKILLS_DIR)
-  const allLocal = await listInstalledSkillsInternal({ skipCustomPaths: true })
+  // 1. List local global skills and resolve the physical shared-storage root.
+  const allLocal = dependencies.localSkills
+  const storageRoot = dependencies.storageRoot ?? CANONICAL_SKILLS_DIR
+  let localStorageRoot: string
+  let storageRootExists = true
+  try {
+    localStorageRoot = await fs.realpath(storageRoot)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    const rootEntry = await fs.lstat(storageRoot).catch((statError: NodeJS.ErrnoException) => {
+      if (statError.code === "ENOENT") return null
+      throw statError
+    })
+    if (rootEntry?.isSymbolicLink()) {
+      throw new Error("通用 Skill 存储盘不可用，已停止推送预览", { cause: error })
+    }
+    if (rootEntry) throw error
+    localStorageRoot = path.resolve(storageRoot)
+    storageRootExists = false
+  }
+  if (storageRootExists) await fs.readdir(localStorageRoot)
   const localCanonical = allLocal.filter(
     (s) =>
       s.scope === "global" &&
-      isPathInside(CANONICAL_SKILLS_DIR, s.canonicalPath),
+      isPathInside(localStorageRoot, s.canonicalPath),
   )
 
   // 2. Hash each local SKILL.md
@@ -98,7 +131,7 @@ export async function planPush(
   }
 
   // 3. Scan remote
-  const remote = await scanRemoteSkills(server)
+  const remote = await (dependencies.scanRemote ?? scanRemoteSkills)(server)
   const remoteBase = normalizeRemoteBase(server.skillsBasePath)
 
   // Match remote skills to local folder names by remotePath suffix.
@@ -186,6 +219,7 @@ export async function planPush(
 export async function applyPush(
   server: RemoteServer,
   preview: PushPreview,
+  dependencies: Pick<PushDependencies, "upload" | "delete"> = {},
 ): Promise<PushResult> {
   const errors: { folderName: string; message: string }[] = []
   const remoteBase = normalizeRemoteBase(server.skillsBasePath)
@@ -193,7 +227,12 @@ export async function applyPush(
   // Uploads (added + updated). Use uploadSkillDir which handles tar pipeline.
   for (const entry of [...preview.toAdd, ...preview.toUpdate]) {
     try {
-      await uploadSkillDir(server, CANONICAL_SKILLS_DIR, entry.folderName, remoteBase)
+      await (dependencies.upload ?? uploadSkillDir)(
+        server,
+        path.dirname(entry.localPath),
+        path.basename(entry.localPath),
+        remoteBase,
+      )
     } catch (err) {
       errors.push({
         folderName: entry.folderName,
@@ -206,7 +245,7 @@ export async function applyPush(
   if (preview.mirror) {
     for (const entry of preview.toDelete) {
       try {
-        await deleteRemoteSkillDir(server, entry.remoteDir)
+        await (dependencies.delete ?? deleteRemoteSkillDir)(server, entry.remoteDir)
       } catch (err) {
         errors.push({
           folderName: entry.folderName,
