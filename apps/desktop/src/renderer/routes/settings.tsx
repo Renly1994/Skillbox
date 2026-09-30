@@ -6,6 +6,7 @@ import { useLocalization, type AppLocale } from "../lib/localization"
 import { OPEN_SETTINGS_DIALOG } from "../components/skillbox-brand"
 import { AgentLogo } from "../components/agent-logo"
 import { SupportAuthorButton } from "../components/support-author"
+import { OPEN_UPDATE_DIALOG } from "../components/update-notifier"
 
 // ---------------------------------------------------------------------------
 // Setting row components
@@ -244,6 +245,10 @@ export function Settings() {
     try {
       const state = await electronAPI.updatesCheck()
       setUpdateState(state)
+      if (state.status === "available" || state.status === "downloading" || state.status === "downloaded") {
+        closeSettings()
+        window.dispatchEvent(new Event(OPEN_UPDATE_DIALOG))
+      }
     } catch (err) {
       console.error("Failed to check updates:", err)
     } finally {

@@ -138,6 +138,12 @@ export async function downloadAppUpdate(): Promise<UpdateState> {
   if (!app.isPackaged) return updateState
   if (updateState.status !== "available") return updateState
 
+  setUpdateState({
+    status: "downloading",
+    progressPercent: 0,
+    message: `Downloading update ${updateState.availableVersion ?? ""}`.trim(),
+  })
+
   try {
     await autoUpdater.downloadUpdate()
   } catch (error) {

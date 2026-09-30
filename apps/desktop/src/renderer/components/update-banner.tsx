@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react"
 import { electronAPI } from "../lib/electron-api"
+import { OPEN_UPDATE_DIALOG } from "./update-notifier"
 
 export function UpdateBanner() {
   const [state, setState] = useState<UpdateState | null>(null)
@@ -9,7 +10,7 @@ export function UpdateBanner() {
     electronAPI.updatesGetState().then(setState).catch(() => {})
     const cleanup = electronAPI.onUpdateState((s) => {
       setState(s)
-      // Show banner again when a new state arrives
+      // 发现新版本或下载完成时重新显示提示。
       if (s.status === "available" || s.status === "downloaded") {
         setDismissed(false)
       }
@@ -47,17 +48,22 @@ export function UpdateBanner() {
     return (
       <div className="flex items-center justify-between px-4 py-2.5 bg-accent/10 border-b border-accent/20 text-[12px]">
         <span className="text-foreground">
-          Downloading update <strong>v{state.availableVersion}</strong>...
-          {state.progressPercent != null && (
-            <span className="text-muted ml-2">{Math.round(state.progressPercent)}%</span>
-          )}
+          发现新版本 <strong>v{state.availableVersion}</strong>，等待确认下载。
         </span>
-        <button
-          onClick={() => setDismissed(true)}
-          className="text-muted hover:text-foreground transition-colors px-2 py-1"
-        >
-          Dismiss
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setDismissed(true)}
+            className="text-muted hover:text-foreground transition-colors px-2 py-1"
+          >
+            Later
+          </button>
+          <button
+            onClick={() => window.dispatchEvent(new Event(OPEN_UPDATE_DIALOG))}
+            className="bg-foreground text-background px-3 py-1 rounded-md hover:opacity-90 transition-opacity font-medium"
+          >
+            查看更新
+          </button>
+        </div>
       </div>
     )
   }

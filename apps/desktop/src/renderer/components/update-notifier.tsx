@@ -4,6 +4,8 @@ import { electronAPI } from "../lib/electron-api"
 
 marked.setOptions({ async: false, breaks: true, gfm: true })
 
+export const OPEN_UPDATE_DIALOG = "skillbox:open-update-dialog"
+
 function sanitizeHtml(html: string): string {
   let clean = html.replace(
     /<(script|iframe|object|embed|form|style)\b[^<]*(?:(?!<\/\1>)<[^<]*)*<\/\1>/gi,
@@ -22,25 +24,6 @@ interface ReleaseNotes {
   body: string
   url: string
   publishedAt: string
-}
-
-function UpdateIcon() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-      <polyline points="7 10 12 15 17 10" />
-      <line x1="12" y1="15" x2="12" y2="3" />
-    </svg>
-  )
 }
 
 function versionText(version: string | undefined): string {
@@ -85,9 +68,22 @@ export function UpdateNotifier() {
   const announcedVersion = useRef("")
 
   useEffect(() => {
-    electronAPI.updatesGetState().then(setState).catch(() => {})
+    let receivedState = false
+    const cleanup = electronAPI.onUpdateState((next) => {
+      receivedState = true
+      setState(next)
+    })
+    electronAPI.updatesGetState().then((initial) => {
+      if (!receivedState) setState(initial)
+    }).catch(() => {})
     electronAPI.appGetVersion().then(setAppVersion).catch(() => {})
-    return electronAPI.onUpdateState(setState)
+    const handleOpen = () => setOpen(true)
+    window.addEventListener(OPEN_UPDATE_DIALOG, handleOpen)
+    return () => {
+      receivedState = true
+      cleanup()
+      window.removeEventListener(OPEN_UPDATE_DIALOG, handleOpen)
+    }
   }, [])
 
   const hasUpdate =
@@ -104,14 +100,22 @@ export function UpdateNotifier() {
   }, [hasUpdate, targetVersion])
 
   useEffect(() => {
-    if (!open || !hasUpdate || notes || notesLoading) return
+    if (!open || !hasUpdate || !targetVersion) return
+    let cancelled = false
     setNotesLoading(true)
     electronAPI
       .updatesReleaseNotes()
-      .then((result) => setNotes(result))
-      .catch(() => setNotes(null))
-      .finally(() => setNotesLoading(false))
-  }, [open, hasUpdate, notes, notesLoading])
+      .then((result) => {
+        if (!cancelled) setNotes(result?.version === targetVersion ? result : null)
+      })
+      .catch(() => {
+        if (!cancelled) setNotes(null)
+      })
+      .finally(() => {
+        if (!cancelled) setNotesLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [open, hasUpdate, targetVersion])
 
   const releaseUrl =
     notes?.url ||
@@ -119,7 +123,7 @@ export function UpdateNotifier() {
       ? `https://github.com/Renly1994/Skillbox/releases/tag/desktop-v${targetVersion}`
       : "https://github.com/Renly1994/Skillbox/releases")
   const publishedAt = notes?.publishedAt ? formatPublishedAt(notes.publishedAt) : ""
-  const releaseTitle = notes?.name || "更可靠地发现并同步 Skill"
+  const releaseTitle = notes?.name || "版本更新"
 
   const handleCopyUpdateRequest = async () => {
     if (!targetVersion) return
@@ -153,17 +157,6 @@ export function UpdateNotifier() {
 
   return (
     <>
-      <button
-        type="button"
-        className={`skillbox-update-button ${hasUpdate ? "has-update" : ""}`}
-        title={hasUpdate ? `新版本 ${versionText(targetVersion)} 可用` : "检查更新"}
-        aria-label={hasUpdate ? `新版本 ${versionText(targetVersion)} 可用` : "检查更新"}
-        onClick={() => setOpen(true)}
-      >
-        <UpdateIcon />
-        {hasUpdate && <i className="skillbox-update-dot" />}
-      </button>
-
       {open && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-5"
@@ -211,7 +204,7 @@ export function UpdateNotifier() {
                   />
                 ) : (
                   <p className="mt-2 text-[12px] leading-5 text-muted">
-                    本次更新修复了项目级 Skill 扫描、同名条目与独立副本同步问题，并新增 3 个 Agent 适配。
+                    暂无更新说明。
                   </p>
                 )}
               </div>

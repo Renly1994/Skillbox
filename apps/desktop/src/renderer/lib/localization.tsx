@@ -456,6 +456,9 @@ const zhToEn: Record<string, string> = {
   "个本地 Skill · 跨": "local skills · across",
   "没有找到相关 Skill": "No skills found",
   // Update dialog
+  发现新版本: "New version",
+  "，等待确认下载。": ", waiting for download confirmation.",
+  查看更新: "View update",
   版本更新: "App updates",
   检查更新: "Check for updates",
   "检查中…": "Checking…",

@@ -1,6 +1,7 @@
 import { Suspense, lazy } from "react"
 import { HashRouter, Navigate, Routes, Route } from "react-router-dom"
 import { UpdateBanner } from "./components/update-banner"
+import { UpdateNotifier } from "./components/update-notifier"
 import { Home } from "./routes/home"
 import { SupportAuthorDialog } from "./components/support-author"
 
@@ -41,6 +42,7 @@ export function App() {
             <Settings />
           </Suspense>
           <SupportAuthorDialog />
+          <UpdateNotifier />
         </main>
       </div>
     </HashRouter>
