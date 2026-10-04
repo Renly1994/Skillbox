@@ -33,9 +33,12 @@ const vscodeConfigHome = process.platform === "win32"
   : process.platform === "darwin"
     ? path.join(home, "Library", "Application Support", "Code")
     : path.join(configHome, "Code")
+const vscodeInsidersConfigHome = path.join(path.dirname(vscodeConfigHome), "Code - Insiders")
 const zedConfigHomes = [
   path.join(configHome, "zed"),
-  ...(process.env.APPDATA ? [path.join(process.env.APPDATA, "Zed")] : []),
+  ...(process.platform === "win32"
+    ? [path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "Zed")]
+    : []),
 ]
 
 export async function dirExists(targetPath: string): Promise<boolean> {
@@ -121,6 +124,13 @@ export const agentRegistry: Record<string, AgentEntry> = {
     shortCode: "VS",
     globalSkillsDir: path.join(copilotHome, "skills"),
     detectInstalled: () => dirExists(vscodeConfigHome),
+  },
+  "vscode-insiders": {
+    name: "vscode-insiders",
+    displayName: "VS Code Insiders (Copilot)",
+    shortCode: "VI",
+    globalSkillsDir: path.join(copilotHome, "skills"),
+    detectInstalled: () => dirExists(vscodeInsidersConfigHome),
   },
   windsurf: {
     name: "windsurf",
@@ -248,6 +258,13 @@ export const agentRegistry: Record<string, AgentEntry> = {
     shortCode: "WB",
     globalSkillsDir: path.join(home, ".workbuddy", "skills"),
     detectInstalled: () => dirExists(path.join(home, ".workbuddy")),
+  },
+  "workbuddy-ai": {
+    name: "workbuddy-ai",
+    displayName: "WorkBuddy AI",
+    shortCode: "WA",
+    globalSkillsDir: path.join(home, ".workbuddy-ai", "skills"),
+    detectInstalled: () => dirExists(path.join(home, ".workbuddy-ai")),
   },
   "doubao-work": {
     name: "doubao-work",
@@ -487,11 +504,14 @@ export const PROJECT_PROBES = [
   { subpath: ".roo-code/skills", agentName: "roo-code" },
   { subpath: ".roo/skills", agentName: "roo-code" },
   { subpath: ".workbuddy/skills", agentName: "workbuddy" },
+  { subpath: ".workbuddy-ai/skills", agentName: "workbuddy-ai" },
   { subpath: ".kimi-code/skills", agentName: "kimi-code" },
   { subpath: ".dsh/skills", agentName: "deepseek-harness" },
   { subpath: ".qoderwork/skills", agentName: "qoderwork" },
   { subpath: ".qoder/skills", agentName: "qoder" },
+  { subpath: ".qoder-cn/skills", agentName: "qoder-cn" },
   { subpath: ".trae/skills", agentName: "trae" },
+  { subpath: ".trae-cn/skills", agentName: "trae-cn" },
   { subpath: ".traecli/skills", agentName: "traecode-cli" },
   { subpath: ".zed/skills", agentName: "zed" },
   { subpath: ".mimocode/skills", agentName: "mimo-code" },

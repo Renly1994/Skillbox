@@ -27,7 +27,7 @@
     },
     "apps/desktop": {
       "name": "@skillbox/desktop",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "dependencies": {
         "@codemirror/commands": "^6.10.3",
         "@codemirror/lang-markdown": "^6.5.0",

@@ -45,19 +45,16 @@ function shortCodeOf(agentName: string, fallback: string): string {
   return agentRegistry[agentName]?.shortCode ?? fallback
 }
 
-function vscodeUserDir(): string {
-  if (process.platform === "win32") return path.join(appData, "Code", "User")
+function vscodeUserDir(product = "Code"): string {
+  if (process.platform === "win32") return path.join(appData, product, "User")
   if (process.platform === "darwin") {
-    return path.join(home, "Library", "Application Support", "Code", "User")
+    return path.join(home, "Library", "Application Support", product, "User")
   }
-  return path.join(configHome, "Code", "User")
+  return path.join(configHome, product, "User")
 }
 
 function zedConfigDir(): string {
   if (process.platform === "win32") return path.join(appData, "Zed")
-  if (process.platform === "darwin") {
-    return path.join(home, "Library", "Application Support", "Zed")
-  }
   return path.join(configHome, "zed")
 }
 
@@ -193,6 +190,16 @@ export const mcpAgentRegistry: McpAgentConfigEntry[] = [
     writable: true,
   },
   {
+    id: "workbuddy-ai",
+    displayName: "WorkBuddy AI",
+    shortCode: shortCodeOf("workbuddy-ai", "WA"),
+    configPath: path.join(home, ".workbuddy-ai", "mcp.json"),
+    format: "json-mcpServers",
+    entryStyle: "workbuddy",
+    installedDir: path.join(home, ".workbuddy-ai"),
+    writable: true,
+  },
+  {
     id: "iflow-cli",
     displayName: "iFlow CLI",
     shortCode: shortCodeOf("iflow-cli", "IF"),
@@ -252,6 +259,17 @@ export const mcpAgentRegistry: McpAgentConfigEntry[] = [
     containerPath: ["servers"],
     entryStyle: "vscode",
     installedDir: path.dirname(vscodeDir),
+    writable: true,
+  },
+  {
+    id: "vscode-insiders",
+    displayName: "VS Code Insiders (Copilot)",
+    shortCode: shortCodeOf("vscode-insiders", "VI"),
+    configPath: path.join(vscodeUserDir("Code - Insiders"), "mcp.json"),
+    format: "json-mcpServers",
+    containerPath: ["servers"],
+    entryStyle: "vscode",
+    installedDir: path.dirname(vscodeUserDir("Code - Insiders")),
     writable: true,
   },
   {

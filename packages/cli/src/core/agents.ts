@@ -239,6 +239,13 @@ export const agents: Record<string, AgentConfig> = {
     globalSkillsDir: path.join(home, ".workbuddy", "skills"),
     detectInstalled: async () => dirExists(path.join(home, ".workbuddy")),
   },
+  "workbuddy-ai": {
+    name: "workbuddy-ai",
+    displayName: "WorkBuddy AI",
+    skillsDir: ".workbuddy-ai/skills",
+    globalSkillsDir: path.join(home, ".workbuddy-ai", "skills"),
+    detectInstalled: async () => dirExists(path.join(home, ".workbuddy-ai")),
+  },
 
   "doubao-work": {
     name: "doubao-work",
@@ -421,7 +428,12 @@ export const agents: Record<string, AgentConfig> = {
     displayName: "Zed",
     skillsDir: ".agents/skills",
     globalSkillsDir: path.join(home, AGENTS_DIR, SKILLS_SUBDIR),
-    detectInstalled: async () => dirExists(path.join(configHome, "zed")),
+    detectInstalled: async () => anyDirExists([
+      path.join(configHome, "zed"),
+      ...(process.platform === "win32"
+        ? [path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "Zed")]
+        : []),
+    ]),
   },
 
   "mimo-code": {

@@ -644,6 +644,7 @@ test("注册表只启用已确认配置契约的多 Agent 适配器", () => {
     "copilot-cli",
     "qoder",
     "vscode",
+    "vscode-insiders",
     "zed",
     "amp",
     "openclaw",
@@ -651,6 +652,7 @@ test("注册表只启用已确认配置契约的多 Agent 适配器", () => {
     "kilo-code",
     "mimo-code",
     "workbuddy",
+    "workbuddy-ai",
   ]) {
     assert.ok(ids.includes(id), `missing MCP adapter: ${id}`)
   }
@@ -691,6 +693,49 @@ test("WorkBuddy 用户级 MCP 配置可读写本地与远程服务", async () =>
   })
 })
 
+for (const [firstId, secondId, container] of [
+  ["workbuddy", "workbuddy-ai", "mcpServers"],
+  ["vscode", "vscode-insiders", "servers"],
+]) {
+  test(`${firstId} 与 ${secondId} 共存时，修改 MCP 不会写入另一版本`, async () => {
+    await withFixture(async ({ root, backupsDir }) => {
+      const registry = [firstId, secondId].map((id) => {
+        const agent = mcpAgentRegistry.find((item) => item.id === id)
+        assert.ok(agent)
+        return {
+          ...agent,
+          configPath: path.join(root, id, "mcp.json"),
+          installedDir: path.join(root, id),
+        }
+      })
+      for (const agent of registry) {
+        await fs.mkdir(agent.installedDir, { recursive: true })
+        await writeJson(agent.configPath, {
+          [container]: { existing: { type: "stdio", command: "node", args: [`${agent.id}.js`] } },
+        })
+      }
+      const firstBefore = await fs.readFile(registry[0].configPath, "utf8")
+      const scanned = await scanMcpLibrary(registry)
+      assert.equal(scanned.errors.length, 0)
+      assert.deepEqual(scanned.agents.filter((agent) => agent.installed).map((agent) => agent.id).sort(), [firstId, secondId].sort())
+      const existing = scanned.servers.find((server) => server.name === "existing")
+      assert.equal(existing?.connections.length, 2)
+      assert.equal(existing?.consistent, false)
+
+      const added = await addMcpServer(
+        { name: "variant-only", type: "http", url: "https://example.com/mcp" },
+        [secondId],
+        { registry, backupsDir },
+      )
+      assert.equal(added.ok, true, added.error)
+      assert.equal(await fs.readFile(registry[0].configPath, "utf8"), firstBefore)
+      const after = await scanMcpLibrary(registry)
+      assert.deepEqual(after.servers.find((server) => server.name === "variant-only")?.connections.map((connection) => connection.agentId), [secondId])
+      assert.equal(after.servers.find((server) => server.name === "existing")?.connections.length, 2)
+    })
+  })
+}
+
 test("各 Agent 的官方用户级配置样例均能识别 MCP 服务", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "skillbox-mcp-contracts-"))
   const stdio = { command: "node", args: ["server.js"] }
@@ -706,12 +751,14 @@ test("各 Agent 的官方用户级配置样例均能识别 MCP 服务", async ()
     junie: { mcpServers: { sample: stdio } },
     codebuddy: { mcpServers: { sample: stdio } },
     workbuddy: { mcpServers: { sample: { type: "stdio", ...stdio } } },
+    "workbuddy-ai": { mcpServers: { sample: { type: "stdio", ...stdio } } },
     "iflow-cli": { mcpServers: { sample: stdio } },
     "qwen-code": { mcpServers: { sample: { httpUrl: "https://example.com/mcp" } } },
     "kimi-code": { mcpServers: { sample: stdio } },
     "copilot-cli": { mcpServers: { sample: { type: "local", ...stdio } } },
     qoder: { mcpServers: { sample: stdio } },
     vscode: { servers: { sample: { type: "stdio", ...stdio } } },
+    "vscode-insiders": { servers: { sample: { type: "stdio", ...stdio } } },
     zed: { context_servers: { sample: stdio } },
     amp: { "amp.mcpServers": { sample: stdio } },
     openclaw: { mcp: { servers: { sample: stdio } } },

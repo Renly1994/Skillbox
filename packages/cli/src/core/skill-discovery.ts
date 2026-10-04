@@ -42,10 +42,13 @@ const PRIORITY_SEARCH_SUFFIXES = [
   ".openhands/skills",
   ".pi/skills",
   ".qoder/skills",
+  ".qoder-cn/skills",
   ".qoderwork/skills",
   ".roo/skills",
   ".trae/skills",
+  ".trae-cn/skills",
   ".workbuddy/skills",
+  ".workbuddy-ai/skills",
   ".windsurf/skills",
   ".zencoder/skills",
 ];

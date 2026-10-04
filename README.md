@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Agent-42-f05408" alt="支持 42 个 Agent" />
+  <img src="https://img.shields.io/badge/Agent-46-f05408" alt="支持 46 个 Agent" />
   <img src="https://img.shields.io/badge/Skill%20Market-90%2C000%2B-f05408" alt="90,000+ Skill" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-29261f" alt="Windows、macOS、Linux" />
   <img src="https://img.shields.io/badge/license-MIT-29261f" alt="MIT License" />
@@ -52,7 +52,7 @@ Skillbox 将本地 Skill 作为母本统一管理：一个 Skill 只保留一份
 
 ## 支持的 Agent
 
-当前内置 42 个 Agent 适配目标。Skillbox 只显示本机实际检测到的 Agent，并使用项目内置的品牌彩色图标。
+当前内置 46 个 Agent 适配目标。Skillbox 只显示本机实际检测到的 Agent，并使用项目内置的品牌彩色图标。
 
 <table>
   <tr>
@@ -121,7 +121,15 @@ Skillbox 将本地 Skill 作为母本统一管理：一个 Skill 只保留一份
     <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/catpaw.png" width="36" alt="CatPaw" /><br /><b>CatPaw</b><br /><code>catpaw</code></td>
     <td></td>
   </tr>
+  <tr>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/workbuddy.png" width="36" alt="WorkBuddy AI" /><br /><b>WorkBuddy AI</b><br /><code>workbuddy-ai</code></td>
+    <td align="center"><img src="apps/desktop/src/renderer/assets/agent-logos/color/github-copilot.png" width="36" alt="VS Code Insiders" /><br /><b>VS Code Insiders (Copilot)</b><br /><code>vscode-insiders</code></td>
+    <td></td>
+    <td></td>
+  </tr>
 </table>
+
+WorkBuddy 国内版与 WorkBuddy AI 国际版可同时识别，分别管理各自的 Skill 与 MCP。VS Code 稳定版与 Insiders 共用 Copilot 的用户级 Skill 目录，MCP 配置按版本独立管理。
 
 此外，Skillbox 支持将 `~/.agents/skills` 作为跨 Agent 共用的 **通用 Skill 目录**。
 
@@ -143,11 +151,11 @@ npx skillbox-app
 
 当前 macOS 安装包尚未完成 Apple 开发者签名和公证。若首次打开时提示“Skillbox 已损坏，无法打开”，请确认安装包来自本仓库的 [Releases](../../releases/latest)，然后：
 
-1. 将 `Skillbox.app` 拖入“应用程序”文件夹。
+1. 将 `SkillboxApp.app` 拖入“应用程序”文件夹。
 2. 打开“终端”，执行：
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Skillbox.app"
+xattr -dr com.apple.quarantine "/Applications/SkillboxApp.app"
 ```
 
 3. 前往“应用程序”，右键点击 Skillbox，选择“打开”。

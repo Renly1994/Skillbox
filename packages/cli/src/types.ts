@@ -41,6 +41,7 @@ export type AgentType =
   | "trae-cn"
   | "traecode-cli"
   | "workbuddy"
+  | "workbuddy-ai"
   | "windsurf"
   | "zcode"
   | "zed"
