@@ -4,11 +4,11 @@
 
 <h1 align="center">Skillbox</h1>
 
-<p align="center">一个 Skill，只装一次。</p>
+<p align="center">同一套 Skill，换个 AI 工具又要装一遍；<br />改了内容，还得挨个同步。</p>
 
 <p align="center">
-  本地优先、无需账号的 Skill 与 MCP 管理工具。<br />
-  统一整理本机 Skill 与 MCP，按 Agent 独立适配，更新、恢复和迁移都在一个地方。
+  Skillbox 统一管理 Claude Code、Codex、Cursor 等工具的 Skill 与 MCP。<br />
+  Skill 集中维护，按工具选择启用；MCP 配置集中查看、比较和同步。
 </p>
 
 <p align="center">
