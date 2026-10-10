@@ -236,6 +236,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onSkillsUpdated: (callback: (skills: unknown[]) => void) => {
     return subscribe("skills:updated", callback)
   },
+  onSkillHeatUpdated: (callback: (updates: unknown[]) => void) => {
+    return subscribe("skills:heat-updated", callback)
+  },
   onMigrationProgress: (callback: (progress: unknown) => void) => {
     return subscribe("skills:migration-progress", callback)
   },

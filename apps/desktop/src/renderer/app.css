@@ -1675,6 +1675,36 @@ select:focus-visible {
 	gap: 8px;
 }
 
+.skillbox-skill-heat {
+	display: inline-flex;
+	position: relative;
+	z-index: 2;
+	flex: none;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 1px;
+	min-width: 20px;
+	height: 24px;
+	padding: 0 2px;
+	border-radius: 4px;
+	color: var(--muted);
+	cursor: help;
+}
+.skillbox-skill-heat.has-heat { color: var(--accent); }
+.skillbox-skill-heat.is-unlit { color: color-mix(in srgb, var(--accent) 40%, var(--muted)); }
+.skillbox-skill-heat svg { flex: none; }
+.skillbox-skill-heat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.skillbox-skill-heat:active { transform: translateY(1px); }
+@media (hover: hover) { .skillbox-skill-heat:hover { background: var(--accent-soft); } }
+.skillbox-heat-tooltip { position: fixed; z-index: 100; width: 276px; padding: 12px 14px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 24px color-mix(in srgb, var(--foreground) 12%, transparent); color: var(--foreground); font-size: 12px; pointer-events: none; }
+.skillbox-heat-tooltip strong { font-size: 14px; }
+.skillbox-heat-tooltip p { margin: 7px 0 0; color: var(--muted); line-height: 1.65; }
+.skillbox-heat-tooltip small { display: block; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; line-height: 1.65; }
+.skillbox-heat-levels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0 0; font-size: 11px; }
+.skillbox-heat-levels dt { font-weight: 600; }
+.skillbox-heat-levels dd { margin: 3px 0 0; color: var(--muted); }
+.skillbox-heat-levels .is-current dt { color: var(--accent); }
+
 .skillbox-copy-name {
 	display: inline-flex;
 	align-items: center;
@@ -2731,6 +2761,23 @@ html.transitioning *::after {
  font-size: 11px;
 }
 .skillbox-version-filter[aria-pressed="true"] { background: var(--accent-soft); color: var(--foreground); }
+.skillbox-usage-filter { position: relative; }
+.skillbox-usage-filter__trigger { padding: 5px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--muted); font-size: 11px; white-space: nowrap; }
+.skillbox-usage-filter__trigger[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.skillbox-usage-filter__panel { position: absolute; left: 0; top: calc(100% + 8px); z-index: 50; width: 272px; padding: 14px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 24px color-mix(in srgb, var(--foreground) 12%, transparent); }
+.skillbox-usage-filter__modes { display: flex; gap: 4px; margin-bottom: 14px; }
+.skillbox-usage-filter__modes button { flex: 1; padding: 6px 4px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.skillbox-usage-filter__modes button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.skillbox-usage-filter__panel label { justify-content: space-between; margin-top: 10px; }
+.skillbox-usage-filter__panel input[type="number"] { width: 62px; height: 28px; margin-right: 6px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--background); color: var(--foreground); font-size: 12px; }
+.skillbox-usage-filter__panel label.skillbox-usage-filter__favorites { justify-content: flex-start; }
+.skillbox-usage-filter__panel p { margin: 12px 0 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.skillbox-usage-filter__panel small { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+.skillbox-usage-filter__panel .skillbox-usage-filter__error { margin-top: 5px; color: var(--danger); }
+.skillbox-usage-filter :is(button, input, select):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.skillbox-usage-filter button:active { transform: translateY(1px); }
+.skillbox-usage-filter :is(button, input, select):disabled { opacity: .5; cursor: not-allowed; }
+@media (hover: hover) { .skillbox-usage-filter button:not(:disabled):hover { border-color: var(--accent); } }
 .skillbox-uncollected {
  display: flex;
  align-items: center;

@@ -9,6 +9,7 @@ declare global {
   }
 
   interface InstalledSkill {
+    heat?: import("../shared/skill-heat").SkillHeat
     name: string
     description: string
     path: string
@@ -583,6 +584,9 @@ declare global {
 
     onSkillsUpdated: (
       callback: (skills: InstalledSkill[]) => void,
+    ) => () => void
+    onSkillHeatUpdated: (
+      callback: (updates: import("../shared/skill-heat").SkillHeatUpdate[]) => void,
     ) => () => void
     onMigrationProgress: (
       callback: (progress: MigrationProgress) => void,

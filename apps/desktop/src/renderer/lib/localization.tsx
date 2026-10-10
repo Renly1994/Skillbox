@@ -15,6 +15,12 @@ export type AppLocale = "zh-CN" | "en-US"
 const UI_LANGUAGE_KEY = "ui.language"
 
 const zhCN: Record<string, string> = {
+  "No skills match the usage count.": "没有符合次数条件的技能。",
+  "Try increasing the usage limit or including favorites.": "可以提高次数上限，或取消排除收藏。",
+  "No skills match the usage criteria.": "暂无符合使用条件的技能。",
+  "Skills with insufficient records or observation time are excluded.": "记录不足或统计时间未满的技能不会列入。",
+  "Recent heat": "近期热度",
+  "Sort by usage count in the last 30 days; keep the original order for equal counts, with unavailable data last": "按近 30 天使用次数从高到低，同次数保留原顺序；暂无数据排最后",
   "Loading view...": "正在加载页面…",
   Installed: "已安装",
   Discover: "发现",
@@ -305,6 +311,12 @@ const zhCN: Record<string, string> = {
 // keeps every page correct in both locales without rewriting those files.
 // ---------------------------------------------------------------------------
 const zhToEn: Record<string, string> = {
+  "没有符合次数条件的技能。": "No skills match the usage count.",
+  "可以提高次数上限，或取消排除收藏。": "Try increasing the usage limit or including favorites.",
+  "暂无符合使用条件的技能。": "No skills match the usage criteria.",
+  "记录不足或统计时间未满的技能不会列入。": "Skills with insufficient records or observation time are excluded.",
+  "近期热度": "Recent heat",
+  "按近 30 天使用次数从高到低，同次数保留原顺序；暂无数据排最后": "Sort by usage count in the last 30 days; keep the original order for equal counts, with unavailable data last",
   // Sidebar / brand
   在线目录: "Online catalog",
   本地模式: "Local mode",

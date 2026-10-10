@@ -176,7 +176,7 @@ WorkBuddy 国内版与 WorkBuddy AI 国际版可同时识别，分别管理各�
 - macOS：Apple 芯片与 Intel 芯片分别构建
 - Linux：AppImage 与 Debian 安装包
 
-最新版本 **v2.0.1**：[更新说明](docs/releases/desktop-v2.0.1.md)。v2 新功能见 [v2.0.0 更新说明](docs/releases/desktop-v2.0.0.md)。更新时请先完全退出 Skillbox，再覆盖安装；现有 Skill 和本地数据保留。
+最新版本 **v2.0.2**：[更新说明](docs/releases/desktop-v2.0.2.md)。v2 新功能见 [v2.0.0 更新说明](docs/releases/desktop-v2.0.0.md)。更新时请先完全退出 Skillbox，再覆盖安装；现有 Skill 和本地数据保留。
 
 也可以通过 npm 自动识别平台、下载并打开对应安装包：
 

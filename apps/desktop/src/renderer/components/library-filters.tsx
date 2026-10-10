@@ -1,6 +1,7 @@
 import { useMemo } from "react"
 import { categorizeSkill } from "../lib/skill-category"
 import type { LibraryFilters } from "../lib/skill-library-filters"
+import { SkillUsageFilter } from "./skill-usage-filter"
 
 interface Props {
   skills: InstalledSkill[]
@@ -8,6 +9,7 @@ interface Props {
   onChange: (value: LibraryFilters) => void
   onReset: () => void
   hasOtherFilters: boolean
+  loading?: boolean
 }
 
 export function LibraryFiltersBar({ skills, value, onChange }: Props) {
@@ -40,9 +42,9 @@ export function LibraryFiltersBar({ skills, value, onChange }: Props) {
   )
 }
 
-export function LibraryListActions({ skills, value, onChange, onReset, hasOtherFilters }: Props) {
+export function LibraryListActions({ skills, value, onChange, onReset, hasOtherFilters, loading }: Props) {
   const mismatchCount = skills.filter((skill) => skill.versionMismatches.length > 0).length
-  const active = Boolean(value.category || value.mismatched || value.uncollected || hasOtherFilters)
+  const active = Boolean(value.category || value.mismatched || value.uncollected || value.usage !== "all" || hasOtherFilters)
   return (
     <div className="skillbox-filter-controls">
         {(mismatchCount > 0 || value.mismatched) && (
@@ -52,9 +54,10 @@ export function LibraryListActions({ skills, value, onChange, onReset, hasOtherF
             <span aria-hidden="true">⇄</span> 版本差异 <span>{mismatchCount}</span>
           </button>
         )}
+        <SkillUsageFilter skills={skills} value={value} onChange={onChange} loading={loading} />
         {active && <button className="skillbox-filter-reset" onClick={onReset}>清除筛选</button>}
         <label className="skillbox-sort-control">排序
-          <select aria-label="技能排序" title="按列表中真实 Agent 数量从多到少，不计通用目录；同一 Agent 组合相邻，再按 Skill 名称排序" value={value.sort}
+          <select aria-label="技能排序" title={value.sort === "heat" ? "按近 30 天使用次数从高到低，同次数保留原顺序；暂无数据排最后" : "按列表中真实 Agent 数量从多到少，不计通用目录；同一 Agent 组合相邻，再按 Skill 名称排序"} value={value.sort}
             onPointerDown={(event) => { event.currentTarget.dataset.pointerFocus = "true" }}
             onKeyDown={(event) => { delete event.currentTarget.dataset.pointerFocus }}
             onBlur={(event) => { delete event.currentTarget.dataset.pointerFocus }}
@@ -65,6 +68,7 @@ export function LibraryListActions({ skills, value, onChange, onReset, hasOtherF
             <option value="updated">最近更新</option>
             <option value="installed">最近添加</option>
             <option value="coverage">适配数量</option>
+            <option value="heat">近期热度</option>
             <option value="favorites">收藏优先</option>
           </select>
         </label>

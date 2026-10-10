@@ -13,6 +13,8 @@ import { RemoteSkillStore } from "./db/skills"
 import { FavoritesStore } from "./db/favorites"
 import { TranslationCacheStore } from "./db/translation-cache"
 import { ActivityStore } from "./db/activity"
+import { SkillHeatReader, type SkillHeatCache } from "./skill-heat"
+import type { SkillHeat } from "../shared/skill-heat"
 import { loadCachedSkills, saveCachedSkills } from "./db/skills-cache"
 import {
   loadTrendingCache,
@@ -968,6 +970,7 @@ async function listInstalledSkillsInternal(
 /** Internal skill type that includes folderName for cache storage. */
 type InternalSkill = Awaited<ReturnType<typeof listInstalledSkillsInternal>>[number]
 type RendererSkill = Omit<InternalSkill, "folderName"> & {
+  heat?: SkillHeat
   projectNames: string[]
   locations: Array<{
     path: string
@@ -1196,7 +1199,7 @@ async function toRendererSkills(skills: InternalSkill[], identifySources = false
 
   const resolveSource = identifySources ? createSkillSourceResolver() : null
   const rawByPath = new Map(skills.map((skill) => [skill.canonicalPath, skill]))
-  return Promise.all(mergeProjectSkillsIntoGlobal(prepared).map(
+  const rendered = await Promise.all(mergeProjectSkillsIntoGlobal(prepared).map(
     async ({ folderName: _, contentFingerprint: __, ...rest }) => {
       if (!resolveSource || rest.source || rest.sourceType) return rest
       for (const location of rest.locations) {
@@ -1210,7 +1213,59 @@ async function toRendererSkills(skills: InternalSkill[], identifySources = false
       }
       return rest
     },
-  )) as Promise<RendererSkill[]>
+  )) as RendererSkill[]
+  const reader = getSkillHeatReader()
+  lastRendererSkills = reader.attach(rendered)
+  saveSkillHeatCache(reader)
+  return lastRendererSkills
+}
+
+const SKILL_HEAT_KEY = "skills.heat.v3"
+let skillHeatReader: SkillHeatReader | null = null
+let lastRendererSkills: RendererSkill[] | null = null
+let heatRefreshInFlight: Promise<void> | null = null
+let lastHeatRefresh = 0
+let lastHeatCache = ""
+let lastBroadcastHeat = new Map<string, string>()
+
+function getSkillHeatReader(): SkillHeatReader {
+  if (!skillHeatReader) {
+    ensureStores()
+    const cache = settingsStore.get<SkillHeatCache>(SKILL_HEAT_KEY, { files: {} })
+    skillHeatReader = new SkillHeatReader(undefined, cache)
+    lastHeatCache = JSON.stringify(cache)
+  }
+  return skillHeatReader
+}
+
+function saveSkillHeatCache(reader: SkillHeatReader): void {
+  const cache = JSON.stringify(reader.cache)
+  if (cache === lastHeatCache) return
+  settingsStore.set(SKILL_HEAT_KEY, reader.cache)
+  lastHeatCache = cache
+}
+
+async function refreshSkillHeat(force = false): Promise<void> {
+  if (heatRefreshInFlight) return heatRefreshInFlight
+  if (!force && Date.now() - lastHeatRefresh < 30_000) return
+  lastHeatRefresh = Date.now()
+  heatRefreshInFlight = (async () => {
+    const reader = getSkillHeatReader()
+    await reader.refresh()
+    const updated = lastRendererSkills ? reader.attach(lastRendererSkills) : null
+    saveSkillHeatCache(reader)
+    if (!updated) return
+    const changes = updated.filter(skill => JSON.stringify(skill.heat) !== lastBroadcastHeat.get(skill.canonicalPath))
+    lastRendererSkills = updated
+    if (changes.length && _mainWindow && !_mainWindow.isDestroyed()) {
+      // 热度更新单独推送，保留正文、附件缓存和当前阅读位置。
+      _mainWindow.webContents.send("skills:heat-updated", changes.map(({ canonicalPath, heat }) => ({ canonicalPath, heat })))
+      for (const skill of changes) lastBroadcastHeat.set(skill.canonicalPath, JSON.stringify(skill.heat))
+    }
+  })().catch((error) => {
+    console.warn("Skill heat refresh failed:", error)
+  }).finally(() => { heatRefreshInFlight = null })
+  return heatRefreshInFlight
 }
 
 /** Backward-compatible wrapper -- returns the renderer-safe shape. */
@@ -1280,6 +1335,7 @@ function maybeBroadcastSkills(
 
   if (_mainWindow && !_mainWindow.isDestroyed()) {
     _mainWindow.webContents.send("skills:updated", skills)
+    lastBroadcastHeat = new Map(skills.map(skill => [skill.canonicalPath, JSON.stringify(skill.heat)]))
   }
   lastBroadcastFingerprint = fingerprint
 }
@@ -1317,6 +1373,7 @@ async function runRescan(
       }
     }
     clearSupportingFilesCache()
+    await refreshSkillHeat()
     const rendered = await toRendererSkills(raw, true)
     const fingerprint = persistCachedSkills(raw, preserveCustomScope)
     maybeBroadcastSkills(rendered, fingerprint, broadcast)
@@ -1339,6 +1396,9 @@ let restartSkillWatcher: (() => Promise<void>) | null = null
 /** Called from the main process to provide a window reference for pushing events. */
 export function setMainWindow(win: BrowserWindow): void {
   _mainWindow = win
+  win.on("focus", () => {
+    if (lastRendererSkills) void refreshSkillHeat()
+  })
 }
 
 export function setSkillWatcherRestart(handler: () => Promise<void>): void {
@@ -2356,6 +2416,8 @@ export function registerIpcHandlers(): void {
         rescanAndCache().catch((err) => {
           console.error("Background rescan failed:", err)
         })
+      } else {
+        void refreshSkillHeat()
       }
       return toRendererSkills(cached)
     }
@@ -2367,6 +2429,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle("skills:rescan", async () => {
     cachedAgents = null
     agentCacheTime = 0
+    await refreshSkillHeat(true)
     return rescanAndCache()
   })
 

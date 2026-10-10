@@ -31,6 +31,7 @@ import {
   useMcpLibrary,
 } from "../components/mcp-nav"
 import { CopySkillName } from "../components/copy-name"
+import { SkillHeatIndicator } from "../components/skill-heat"
 import { AliasTitle } from "../components/alias-title"
 import { useDisplayAliases, setSkillAlias } from "../lib/display-aliases"
 import { HomeNavLink } from "../components/home-nav"
@@ -560,6 +561,7 @@ function SkillListRow({
           <button type="button" data-no-localize className="skillbox-skill-name" title={skill.name}>
             {skillAliases[skill.canonicalPath] ?? skill.name}
           </button>
+          <SkillHeatIndicator heat={skill.heat} />
           <CopySkillName name={skill.name} />
         </span>
         <span
@@ -881,7 +883,7 @@ function MiddlePanel({
               <select aria-label="筛选收藏的 Skill 范围" value={favoriteSkillScope} onChange={(event) => setFavoriteSkillScope(event.target.value as SkillScopeFilter)}><option value="all">全部范围</option><option value="global">全局</option><option value="project">项目</option><option value="custom">自定义</option></select>
               <select aria-label="筛选收藏的 Skill Agent" value={favoriteSkillAgent} onChange={(event) => setFavoriteSkillAgent(event.target.value)}><option value="">全部 Agent</option>{favoriteAgents.map((agent) => <option key={agent} value={agent}>{agent}</option>)}</select>
               {favoriteMismatchCount > 0 && <button type="button" className="skillbox-favorites-filter-toggle" aria-pressed={favoriteSkillFilters.mismatched} onClick={() => setFavoriteSkillFilters((current) => ({ ...current, mismatched: !current.mismatched }))}>版本差异 {favoriteMismatchCount}</button>}
-              <select aria-label="排序收藏的 Skill" value={favoriteSkillFilters.sort} onChange={(event) => setFavoriteSkillFilters((current) => ({ ...current, sort: event.target.value as LibraryFilters["sort"] }))}><option value="default">默认排序</option><option value="name-asc">名称 A → Z</option><option value="name-desc">名称 Z → A</option><option value="updated">最近更新</option><option value="installed">最近添加</option><option value="coverage">适配数量</option></select>
+              <select aria-label="排序收藏的 Skill" value={favoriteSkillFilters.sort} onChange={(event) => setFavoriteSkillFilters((current) => ({ ...current, sort: event.target.value as LibraryFilters["sort"] }))}><option value="default">默认排序</option><option value="name-asc">名称 A → Z</option><option value="name-desc">名称 Z → A</option><option value="updated">最近更新</option><option value="installed">最近添加</option><option value="coverage">适配数量</option><option value="heat">近期热度</option></select>
               {favoriteSkillFiltersActive && <button type="button" className="skillbox-favorites-filter-reset" onClick={() => { setFavoriteSkillFilters(DEFAULT_LIBRARY_FILTERS); setFavoriteSkillScope("all"); setFavoriteSkillAgent("") }}>清除</button>}
             </div>}
           </header>
@@ -892,7 +894,7 @@ function MiddlePanel({
               return <div key={skill.canonicalPath} className={`skillbox-favorites-item ${selectedSkillPath === skill.canonicalPath ? "is-selected" : ""}`}>
                 <button type="button" className="skillbox-favorites-item__open" aria-label={`查看 ${skill.name} 详情`} onClick={() => onSelectSkill(skill)} />
                 <span className="skillbox-favorites-item__icon" style={{ color: category.color }} aria-hidden="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d={category.icon} /></svg></span>
-                <span className="skillbox-favorites-item__main"><span className="skillbox-favorites-item__name"><strong data-no-localize title={skill.name}>{skillAliases[skill.canonicalPath] ?? skill.name}</strong><CopySkillName name={skill.name} /></span><small data-no-localize title={description || "暂无简介"}>{description || "暂无简介"}</small></span>
+                <span className="skillbox-favorites-item__main"><span className="skillbox-favorites-item__name"><strong data-no-localize title={skill.name}>{skillAliases[skill.canonicalPath] ?? skill.name}</strong><SkillHeatIndicator heat={skill.heat} /><CopySkillName name={skill.name} /></span><small data-no-localize title={description || "暂无简介"}>{description || "暂无简介"}</small></span>
                 <span className="skillbox-favorites-item__agents"><AgentLogoRow agents={getSkillListAgentNames(skill)} size={19} /></span>
                 <button type="button" className="skillbox-favorites-item__star" aria-label={`取消收藏 ${skill.name}`} title="取消收藏" onClick={(event) => onToggleFavorite(skill, event)}><StarIcon size={17} filled /></button>
               </div>
@@ -1075,6 +1077,7 @@ function MiddlePanel({
         </span>
         <LibraryListActions
           skills={skills}
+          loading={loading}
           value={libraryFilters}
           onChange={onLibraryFiltersChange}
           onReset={onClearFilters}
@@ -1129,8 +1132,9 @@ function MiddlePanel({
             ) : (
               <>
                 <p className="text-muted text-[12px]">
-                  No skills match your search.
+                  {libraryFilters.usage === "low" ? "没有符合次数条件的技能。" : libraryFilters.usage === "idle" ? "暂无符合使用条件的技能。" : "No skills match your search."}
                 </p>
+                {libraryFilters.usage !== "all" && <p className="text-muted text-[11px] mt-1">{libraryFilters.usage === "low" ? "可以提高次数上限，或取消排除收藏。" : "记录不足或统计时间未满的技能不会列入。"}</p>}
                 <button
                   onClick={onClearFilters}
                   className="text-accent text-[12px] mt-2 hover:text-foreground transition-colors"
@@ -2721,7 +2725,11 @@ export function Home() {
         .catch(() => {})
     })
 
-    return cleanup
+    const cleanupHeat = electronAPI.onSkillHeatUpdated((updates) => {
+      const byPath = new Map(updates.map(update => [update.canonicalPath, update.heat]))
+      setSkillsState(current => current.map(skill => byPath.has(skill.canonicalPath) ? { ...skill, heat: byPath.get(skill.canonicalPath) } : skill))
+    })
+    return () => { cleanup(); cleanupHeat() }
   }, [])
 
   useEffect(() => {

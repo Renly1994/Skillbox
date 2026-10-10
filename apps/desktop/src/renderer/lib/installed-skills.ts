@@ -35,9 +35,15 @@ export function useInstalledSkills(): InstalledSkill[] | null {
       cache = skills
       notify()
     })
+    const unsubscribeHeat = electronAPI.onSkillHeatUpdated((updates) => {
+      const byPath = new Map(updates.map(update => [update.canonicalPath, update.heat]))
+      if (cache) cache = cache.map(skill => byPath.has(skill.canonicalPath) ? { ...skill, heat: byPath.get(skill.canonicalPath) } : skill)
+      notify()
+    })
     return () => {
       listeners.delete(listener)
       unsubscribe()
+      unsubscribeHeat()
     }
   }, [])
   return cache
