@@ -60,16 +60,16 @@ test("授权目录本身为 Junction 时，同时授权其真实位置", async (
       name: "demo",
       targets: [{
         path: path.join(linkedRoot, "demo"),
-        canonicalPath: path.join(physicalRoot, "demo"),
+        canonicalPath: await fs.realpath(path.join(physicalRoot, "demo")),
         scope: "global" as const,
       }],
     }
     assert.throws(
       () => validateSkillRemovalRequest(request, [linkedRoot]),
-      (error: unknown) => error instanceof Error && error.message.includes(path.join(physicalRoot, "demo")),
+      (error: unknown) => error instanceof Error && error.message.includes(request.targets[0].canonicalPath),
     )
     const roots = resolveSkillRemovalRoots([linkedRoot])
-    assert.deepEqual(roots, [linkedRoot, physicalRoot])
+    assert.deepEqual(roots, [linkedRoot, await fs.realpath(physicalRoot)])
     assert.doesNotThrow(() => validateSkillRemovalRequest(request, roots))
     assert.throws(() => validateSkillRemovalRequest({
       name: "demo",

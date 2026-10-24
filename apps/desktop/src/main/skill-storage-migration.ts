@@ -166,7 +166,7 @@ export async function migrateSkillStorage(
       const target = insideSource ? path.join(destination, relative) : link.target
       await fs.unlink(linkPath)
       await fs.symlink(target, linkPath, process.platform === "win32" && link.isDirectory ? "junction" : undefined)
-      if (pathKey(await fs.realpath(linkPath)) !== pathKey(target)) {
+      if (pathKey(await fs.realpath(linkPath)) !== pathKey(await fs.realpath(target))) {
         throw new Error(`迁移后链接无效：${link.relativePath}`)
       }
     }

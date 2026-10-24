@@ -89,6 +89,26 @@ test("迁移时保留指向目录内外的 Skill 链接", async () => {
   }
 })
 
+test("通过父目录别名迁移时，内部链接仍指向迁移后的真实目录", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "skillbox-storage-alias-"))
+  const physical = path.join(root, "physical")
+  const alias = path.join(root, "alias")
+  const canonical = path.join(alias, "skills")
+  const destination = path.join(alias, "new-skills")
+  const source = path.join(physical, "skills")
+  try {
+    await fs.mkdir(path.join(source, "demo"), { recursive: true })
+    await fs.writeFile(path.join(source, "demo", "SKILL.md"), "目录别名迁移测试")
+    await fs.symlink(physical, alias, process.platform === "win32" ? "junction" : "dir")
+    await fs.symlink(path.join(source, "demo"), path.join(source, "internal-link"), process.platform === "win32" ? "junction" : "dir")
+    await migrateSkillStorage(canonical, destination)
+    assert.equal(await fs.realpath(path.join(destination, "internal-link")), await fs.realpath(path.join(destination, "demo")))
+    assert.equal(await fs.readFile(path.join(canonical, "internal-link", "SKILL.md"), "utf8"), "目录别名迁移测试")
+  } finally {
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
+
 test("旧通用目录本身是链接时，迁移失败仍保留旧入口", async (context) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "skillbox-storage-existing-link-"))
   const canonical = path.join(root, "skills")
