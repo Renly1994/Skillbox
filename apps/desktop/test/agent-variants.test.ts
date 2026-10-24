@@ -14,7 +14,7 @@ import type { AgentConfig } from "../../../packages/cli/src/types"
 
 const require = createRequire(import.meta.url)
 
-function loadRegistries(platform: NodeJS.Platform, roots: string[]) {
+function loadRegistries(platform: NodeJS.Platform, roots: string[], env: Record<string, string> = {}) {
   const paths = platform === "win32" ? path.win32 : path.posix
   const home = platform === "win32" ? "C:\\用户" : "/home/用户"
   const directories = new Set(roots.map((root) => paths.join(home, root)))
@@ -37,7 +37,7 @@ function loadRegistries(platform: NodeJS.Platform, roots: string[]) {
     }).outputText, {
       exports,
       require: (name: string) => bindings[name] ?? require(name),
-      process: { platform, env: {} },
+      process: { platform, env },
     })
     return exports
   }
@@ -54,6 +54,19 @@ function loadRegistries(platform: NodeJS.Platform, roots: string[]) {
 }
 
 for (const platform of ["win32", "darwin", "linux"] as const) {
+  test(`${platform}：Codex 的 Skill 与 MCP 始终使用同一个配置根目录`, () => {
+    const customHome = platform === "win32" ? "D:\\自定义目录\\Codex Home" : "/data/自定义目录/Codex Home"
+    for (const configuredHome of [undefined, "", customHome]) {
+      const env = configuredHome === undefined ? {} : { CODEX_HOME: configuredHome }
+      const { home, paths, desktop, mcp } = loadRegistries(platform, [], env)
+      const expectedHome = configuredHome || paths.join(home, ".codex")
+      const codex = mcp.find((agent) => agent.id === "codex")!
+      assert.equal(desktop["codex-cli"].globalSkillsDir, paths.join(expectedHome, "skills"))
+      assert.equal(codex.configPath, paths.join(expectedHome, "config.toml"))
+      assert.equal(codex.installedDir, expectedHome)
+    }
+  })
+
   for (const roots of [[".workbuddy"], [".workbuddy-ai"], [".workbuddy", ".workbuddy-ai"]]) {
     test(`${platform}：WorkBuddy 单版与双版安装均独立识别`, async () => {
       const { home, paths, desktop, cli, mcp } = loadRegistries(platform, roots)

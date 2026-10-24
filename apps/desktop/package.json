@@ -1,6 +1,6 @@
 {
   "name": "@skillbox/desktop",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Skillbox local skill manager",
   "homepage": "https://github.com/Renly1994/Skillbox",
   "author": "Sultan Valiyev <valiyevsultan@gmail.com>",
@@ -9,6 +9,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "typecheck": "tsc -b --pretty false",
+    "test": "node --import tsx --test --test-concurrency=4 test/*.test.ts",
     "preview": "electron-vite preview",
     "package": "electron-vite build && electron-builder --config electron-builder.yml",
     "package:mac": "electron-vite build && electron-builder --config electron-builder.yml --mac",

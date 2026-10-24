@@ -51,6 +51,9 @@ interface CloseStrings {
   activeMessage: string
   activeDetail: string
   quitAnyway: string
+  unsavedMessage: string
+  keepEditing: string
+  discardChanges: string
 }
 
 function getStrings(): CloseStrings {
@@ -68,6 +71,9 @@ function getStrings(): CloseStrings {
       activeMessage: "退出将中断正在进行的下载",
       activeDetail: "可先最小化到托盘，Skillbox 会继续在后台完成安装。",
       quitAnyway: "仍然退出",
+      unsavedMessage: "当前修改尚未保存，是否放弃修改？",
+      keepEditing: "继续编辑",
+      discardChanges: "放弃修改并继续",
     }
   }
   return {
@@ -83,6 +89,9 @@ function getStrings(): CloseStrings {
     activeMessage: "Quitting will interrupt the current download",
     activeDetail: "Minimize to the tray to let Skillbox finish installing in the background.",
     quitAnyway: "Quit Anyway",
+    unsavedMessage: "Discard unsaved changes?",
+    keepEditing: "Keep Editing",
+    discardChanges: "Discard and Continue",
   }
 }
 
@@ -132,6 +141,20 @@ export function setupCloseBehavior(
   hasActiveBackgroundWork: () => boolean = () => false,
 ): void {
   const strings = getStrings()
+
+  win.webContents.on("will-prevent-unload", (event) => {
+    const response = dialog.showMessageBoxSync(win, {
+      type: "warning",
+      title: "Skillbox",
+      message: strings.unsavedMessage,
+      buttons: [strings.keepEditing, strings.discardChanges],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    })
+    if (response === 1) event.preventDefault()
+    else isQuitting = false
+  })
 
   win.on("close", (event) => {
     if (isQuitting) return

@@ -40,6 +40,7 @@ export interface McpAgentConfigEntry {
 const home = os.homedir()
 const appData = process.env.APPDATA ?? path.join(home, "AppData", "Roaming")
 const configHome = process.env.XDG_CONFIG_HOME ?? path.join(home, ".config")
+const codexHome = path.dirname(agentRegistry["codex-cli"].globalSkillsDir)
 
 function shortCodeOf(agentName: string, fallback: string): string {
   return agentRegistry[agentName]?.shortCode ?? fallback
@@ -108,9 +109,9 @@ export const mcpAgentRegistry: McpAgentConfigEntry[] = [
     id: "codex",
     displayName: "Codex CLI",
     shortCode: shortCodeOf("codex-cli", "CX"),
-    configPath: path.join(home, ".codex", "config.toml"),
+    configPath: path.join(codexHome, "config.toml"),
     format: "codex-toml",
-    installedDir: path.join(home, ".codex"),
+    installedDir: codexHome,
     writable: true,
     writeStrategy: "codex-cli",
   },

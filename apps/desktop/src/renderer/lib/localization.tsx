@@ -15,6 +15,7 @@ export type AppLocale = "zh-CN" | "en-US"
 const UI_LANGUAGE_KEY = "ui.language"
 
 const zhCN: Record<string, string> = {
+  "Discard unsaved changes and continue?": "当前修改尚未保存，是否放弃修改并继续？选择取消可继续编辑。",
   "No skills match the usage count.": "没有符合次数条件的技能。",
   "Try increasing the usage limit or including favorites.": "可以提高次数上限，或取消排除收藏。",
   "No skills match the usage criteria.": "暂无符合使用条件的技能。",

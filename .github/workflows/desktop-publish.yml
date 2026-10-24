@@ -69,6 +69,12 @@ jobs:
             exit 1
           }
 
+      - name: Check desktop types
+        run: npm run typecheck -w @skillbox/desktop
+
+      - name: Test desktop app
+        run: npm test -w @skillbox/desktop
+
       - name: Build and package desktop app
         shell: bash
         run: |

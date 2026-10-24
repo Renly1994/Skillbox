@@ -11,6 +11,7 @@ import { List, type RowComponentProps } from "react-window"
 import { marked } from "marked"
 import { NavLink, useLocation } from "react-router-dom"
 import { electronAPI } from "../lib/electron-api"
+import { installSkillEditGuard } from "../lib/skill-edit-guard"
 import { categorizeSkill } from "../lib/skill-category"
 import { DEFAULT_LIBRARY_FILTERS, refineLibrarySkills, type LibraryFilters } from "../lib/skill-library-filters"
 import { LibraryFiltersBar, LibraryListActions } from "../components/library-filters"
@@ -1782,7 +1783,7 @@ function RightPanel({
   const [editMode, setEditMode] = useState(false)
   const [supportingPreview, setSupportingPreview] = useState("")
   const [selectedSupportingFile, setSelectedSupportingFile] = useState<string | null>(null)
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "error">("idle")
   const [showRemoveDialog, setShowRemoveDialog] = useState(false)
   const [boundAgents, setBoundAgents] = useState<string[]>(
     skill ? getAdaptedAgentNames(skill) : [],
@@ -1797,6 +1798,10 @@ function RightPanel({
     skill?.canonicalPath ?? "",
   )
   const editorRef = useRef<SkillEditorHandle | null>(null)
+  const editInitialContentRef = useRef("")
+  const savedContentRef = useRef("")
+  const hasUnsavedChangesRef = useRef(false)
+  const savingRef = useRef(false)
   const panelRef = useRef<HTMLDivElement | null>(null)
   const detailScrollRef = useRef<HTMLDivElement | null>(null)
   const skillAgentsKey = skill ? getAdaptedAgentNames(skill).join("\0") : ""
@@ -1815,6 +1820,7 @@ function RightPanel({
   // Reset edit mode when skill changes
   useEffect(() => {
     setEditMode(false)
+    hasUnsavedChangesRef.current = false
     setSupportingPreview("")
     setSelectedSupportingFile(null)
     setSaveStatus("idle")
@@ -1829,7 +1835,7 @@ function RightPanel({
   }, [skill?.canonicalPath, skillAgentsKey])
 
   useEffect(() => {
-    if (!skill) return
+    if (!skill || editMode) return
 
     const handleOutsidePointerDown = (event: PointerEvent) => {
       if (event.target instanceof Element && event.target.closest(".skillbox-skill-row")) return
@@ -1841,7 +1847,29 @@ function RightPanel({
 
     document.addEventListener("pointerdown", handleOutsidePointerDown)
     return () => document.removeEventListener("pointerdown", handleOutsidePointerDown)
-  }, [onClose, skill])
+  }, [onClose, skill, editMode])
+
+  const confirmDiscardEdits = useCallback(() => {
+    if (savingRef.current) return false
+    if (hasUnsavedChangesRef.current && !window.confirm(translate("Discard unsaved changes and continue?"))) return false
+    hasUnsavedChangesRef.current = false
+    setEditMode(false)
+    setSaveStatus("idle")
+    return true
+  }, [translate])
+
+  useEffect(() => {
+    if (!editMode || !panelRef.current) return
+    return installSkillEditGuard(
+      panelRef.current,
+      () => hasUnsavedChangesRef.current || savingRef.current,
+      () => {
+        if (!confirmDiscardEdits()) return false
+        onClose()
+        return true
+      },
+    )
+  }, [editMode, confirmDiscardEdits, onClose])
 
   useEffect(() => {
     if (!skill?.path || supportingFiles.length === 0) {
@@ -1885,33 +1913,37 @@ function RightPanel({
 
   const handleEditToggle = () => {
     if (!editMode) {
+      editInitialContentRef.current = content ?? ""
+      savedContentRef.current = editInitialContentRef.current
+      hasUnsavedChangesRef.current = false
       setSaveStatus("idle")
     }
     setEditMode(!editMode)
   }
 
   const handleSave = async (editorContent?: string) => {
-    if (!skill?.path) return
+    if (!skill?.path || savingRef.current) return
     const nextContent = editorContent ?? editorRef.current?.getValue() ?? content ?? ""
+    savingRef.current = true
     setSaveStatus("saving")
     try {
       const filePath = skill.path + "/SKILL.md"
       await electronAPI.writeSkillContent(filePath, nextContent)
       onContentSaved(nextContent)
-      setSaveStatus("saved")
-      setTimeout(() => {
-        setEditMode(false)
-        setSaveStatus("idle")
-      }, 800)
+      savedContentRef.current = nextContent
+      hasUnsavedChangesRef.current = editorRef.current?.getValue() !== nextContent
+      if (!hasUnsavedChangesRef.current) setEditMode(false)
+      setSaveStatus("idle")
     } catch (err) {
       console.error("Failed to save skill content:", err)
       setSaveStatus("error")
+    } finally {
+      savingRef.current = false
     }
   }
 
   const handleCancel = () => {
-    setEditMode(false)
-    setSaveStatus("idle")
+    confirmDiscardEdits()
   }
 
   const handleOpenInFinder = () => {
@@ -2046,14 +2078,12 @@ function RightPanel({
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {saveStatus === "saved" && (
-              <span className="text-[12px] text-green-500">Saved</span>
-            )}
             {saveStatus === "error" && (
               <span className="text-[12px] text-red-500">Save failed</span>
             )}
             <button
               onClick={handleCancel}
+              disabled={saveStatus === "saving"}
               className="rounded-lg border border-border px-4 py-2 text-[12px] text-muted transition-colors hover:text-foreground"
             >
               Cancel
@@ -2070,7 +2100,8 @@ function RightPanel({
         <div className="flex-1 min-h-0">
           <SkillEditor
             ref={editorRef}
-            content={content ?? ""}
+            content={editInitialContentRef.current}
+            onChange={(value) => { hasUnsavedChangesRef.current = value !== savedContentRef.current }}
             onSave={handleSave}
             fullBleed
           />
