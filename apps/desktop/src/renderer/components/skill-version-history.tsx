@@ -172,9 +172,12 @@ export function SkillVersionHistory({
     setNotice(null)
     try {
       await electronAPI.restoreSkillVersion(target, selected.id)
-      await onRestored()
-      await loadVersions()
       setRestorePending(false)
+      setNotice("版本已恢复。")
+      await Promise.all([
+        onRestored().catch(() => setNotice("版本已恢复，但 Skill 列表刷新失败，请手动刷新。")),
+        loadVersions(),
+      ])
     } catch (restoreError) {
       setError(skillVersionErrorMessage(restoreError, "恢复版本失败"))
     } finally {
@@ -342,7 +345,7 @@ export function SkillVersionHistory({
           </main>
         </div>
 
-        {notice && !error && (
+        {notice && (
           <p role="status" className="border-t border-border px-5 py-3 text-[12px] text-muted">{notice}</p>
         )}
         {error && (

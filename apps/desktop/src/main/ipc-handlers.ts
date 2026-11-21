@@ -3688,11 +3688,8 @@ Add your skill instructions here.
       assertSkillStorageReady()
       const resolvedPath = path.resolve(target.canonicalPath)
       if (!isSkillPathAllowed(resolvedPath)) throw new Error("Skill 路径不在已授权目录中")
-      const store = getSkillVersionStore()
-      await store.create(resolvedPath, target.name, "initial")
-      await store.restore(resolvedPath, target.name, versionId)
-      await store.create(resolvedPath, target.name, "restore")
-      await rescanAndCache()
+      // The renderer refreshes the skill list separately once the on-disk restore commits.
+      await getSkillVersionStore().restore(resolvedPath, target.name, versionId)
     },
   )
 

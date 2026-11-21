@@ -2,7 +2,8 @@ import assert from "node:assert/strict"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import test from "node:test"
+import test, { type TestContext } from "node:test"
+import AdmZip from "adm-zip"
 import { migrateDefaultSkillVersionStore, migrateSkillVersionStore, prepareSkillVersionPathMigration, SkillVersionStore } from "../src/main/skill-version-history"
 
 test("迁移 Skill 实体位置后保留版本记录", async () => {
@@ -174,16 +175,148 @@ test("降低保留数量会立即清理旧快照，且历史版本可完整恢�
     assert.equal((await limited.list(fixture.skillPath, "Demo"))[0].number, 6)
 
     const kept = await limited.list(fixture.skillPath, "Demo")
+    const restoredContent = await limited.readFile(fixture.skillPath, "Demo", kept[2].id, "SKILL.md")
     await limited.restore(fixture.skillPath, "Demo", kept[2].id)
-    assert.equal(
-      await fs.readFile(path.join(fixture.skillPath, "SKILL.md"), "utf-8"),
-      await limited.readFile(fixture.skillPath, "Demo", kept[2].id, "SKILL.md"),
-    )
+    assert.equal(await fs.readFile(path.join(fixture.skillPath, "SKILL.md"), "utf-8"), restoredContent)
+    const after = await limited.list(fixture.skillPath, "Demo")
+    assert.deepEqual(after.map(({ number }) => number), [7, 6, 5])
+    assert.equal(after[0].reason, "restore")
+    assert.equal(after[1].id, kept[0].id)
     assert.ok(restoreTarget.id)
     assert.equal(await fs.readFile(path.join(fixture.skillPath, "references", "guide.md"), "utf-8"), "guide v1\n")
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true })
   }
+})
+
+async function createFullRestoreFixture(context: TestContext) {
+  const fixture = await createFixture("skillbox-restore-")
+  context.after(() => fs.rm(fixture.root, { recursive: true, force: true }))
+  const store = new SkillVersionStore(fixture.storePath, 3)
+  const readme = path.join(fixture.skillPath, "SKILL.md")
+  const guide = path.join(fixture.skillPath, "references", "guide.md")
+  const oldest = (await store.create(fixture.skillPath, "Demo", "manual")).version
+  for (const revision of ["B", "C"]) {
+    await fs.writeFile(readme, revision)
+    await fs.writeFile(guide, `guide ${revision}`)
+    await store.create(fixture.skillPath, "Demo", "edit")
+  }
+  await fs.writeFile(readme, "未保存的 D")
+  await fs.writeFile(guide, "guide D")
+  await fs.writeFile(path.join(fixture.skillPath, "draft.txt"), "draft D")
+  const [directory] = (await fs.readdir(fixture.storePath, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+  const historyPath = path.join(fixture.storePath, directory.name)
+  return { ...fixture, store, readme, guide, oldest, historyPath }
+}
+
+async function readHistoryFiles(historyPath: string) {
+  return Promise.all((await fs.readdir(historyPath)).sort().map(async (name) =>
+    [name, await fs.readFile(path.join(historyPath, name))] as const,
+  ))
+}
+
+test("历史已满仍能恢复最旧版本，并可撤销到未保存的完整目录", async (context) => {
+  const { store, skillPath, readme, guide, oldest, historyPath } = await createFullRestoreFixture(context)
+  await store.restore(skillPath, "Demo", oldest.id)
+
+  assert.equal(await fs.readFile(readme, "utf-8"), "# Demo\n\n第一版\n")
+  assert.equal(await fs.readFile(guide, "utf-8"), "guide v1\n")
+  await assert.rejects(fs.stat(path.join(skillPath, "draft.txt")), { code: "ENOENT" })
+
+  const versions = await store.list(skillPath, "Demo")
+  assert.deepEqual(versions.map(({ number, reason }) => [number, reason]), [
+    [5, "restore"], [4, "initial"], [3, "edit"],
+  ])
+  assert.deepEqual((await fs.readdir(historyPath)).sort(),
+    ["history.json", ...versions.map(({ id }) => `${id}.zip`)].sort())
+  assert.equal(await store.readFile(skillPath, "Demo", versions[0].id), "# Demo\n\n第一版\n")
+  assert.equal(await store.readFile(skillPath, "Demo", versions[1].id, "references/guide.md"), "guide D")
+
+  await store.restore(skillPath, "Demo", versions[1].id)
+  assert.equal(await fs.readFile(readme, "utf-8"), "未保存的 D")
+  assert.equal(await fs.readFile(guide, "utf-8"), "guide D")
+  assert.equal(await fs.readFile(path.join(skillPath, "draft.txt"), "utf-8"), "draft D")
+  assert.deepEqual((await store.list(skillPath, "Demo")).map(({ number }) => number), [6, 5, 4])
+})
+
+test("当前内容等于现有快照但其 ZIP 丢失时，恢复仍会创建可读的撤销快照", async (context) => {
+  const { store, skillPath, readme, oldest, historyPath } = await createFullRestoreFixture(context)
+  const latest = (await store.create(skillPath, "Demo", "edit")).version
+  await fs.rm(path.join(historyPath, `${latest.id}.zip`))
+  const target = (await store.list(skillPath, "Demo")).find(({ id }) => id !== latest.id)!
+  assert.notEqual(target.id, oldest.id)
+
+  await store.restore(skillPath, "Demo", target.id)
+
+  const versions = await store.list(skillPath, "Demo")
+  assert.equal(await fs.readFile(readme, "utf-8"), "C")
+  assert.notEqual(versions[1].id, latest.id)
+  assert.equal(await store.readFile(skillPath, "Demo", versions[1].id), "未保存的 D")
+})
+
+for (const damage of ["missing", "corrupt", "without-skill-md"] as const) {
+  test(`不可恢复的快照（${damage}）不会变更历史或当前 Skill`, async (context) => {
+    const { store, skillPath, readme, oldest, historyPath, root } = await createFullRestoreFixture(context)
+    const archivePath = path.join(historyPath, `${oldest.id}.zip`)
+    if (damage === "missing") {
+      await fs.rm(archivePath)
+    } else if (damage === "corrupt") {
+      await fs.writeFile(archivePath, "not a ZIP archive")
+    } else {
+      const archive = new AdmZip()
+      archive.addFile("references/guide.md", Buffer.from("guide only"))
+      archive.writeZip(archivePath)
+    }
+    const before = await readHistoryFiles(historyPath)
+
+    await assert.rejects(store.restore(skillPath, "Demo", oldest.id))
+
+    assert.equal(await fs.readFile(readme, "utf-8"), "未保存的 D")
+    assert.deepEqual(await readHistoryFiles(historyPath), before)
+    assert.deepEqual((await fs.readdir(root)).sort(), ["demo-skill", "version-store"])
+  })
+}
+
+for (const failure of ["snapshot", "swap", "manifest"] as const) {
+  test(`恢复中断（${failure}）时保留当前文件与原有快照`, async (context) => {
+    const { store, skillPath, readme, guide, oldest, historyPath, root } = await createFullRestoreFixture(context)
+    const before = await readHistoryFiles(historyPath)
+    const rename = fs.rename
+    let commitsToLive = 0
+    let zipWrites = 0
+
+    context.mock.method(fs, "rename", async (from: string, to: string) => {
+      const swappingIn = path.basename(from).startsWith(".skillbox-restore-") && to === skillPath
+      if (swappingIn) commitsToLive++
+      if (to.endsWith(".zip")) zipWrites++
+      if ((failure === "snapshot" && zipWrites === 2 && to.endsWith(".zip")) ||
+          (failure === "swap" && swappingIn) ||
+          (failure === "manifest" && to === path.join(historyPath, "history.json"))) {
+        throw Object.assign(new Error(`simulated ${failure} failure`), { code: "EIO" })
+      }
+      return rename(from, to)
+    })
+
+    await assert.rejects(store.restore(skillPath, "Demo", oldest.id), new RegExp(`simulated ${failure} failure`))
+
+    assert.equal(commitsToLive, failure === "snapshot" ? 0 : 1)
+    assert.equal(await fs.readFile(readme, "utf-8"), "未保存的 D")
+    assert.equal(await fs.readFile(guide, "utf-8"), "guide D")
+    assert.deepEqual(await readHistoryFiles(historyPath), before)
+    assert.deepEqual((await fs.readdir(root)).sort(), ["demo-skill", "version-store"])
+  })
+}
+
+test("不同 store 实例的清理不会打断同一个 Skill 正在进行的恢复", async (context) => {
+  const { store, storePath, skillPath, readme, oldest } = await createFullRestoreFixture(context)
+  const otherStore = new SkillVersionStore(storePath, 2)
+  await Promise.all([store.restore(skillPath, "Demo", oldest.id), otherStore.prune()])
+
+  assert.equal(await fs.readFile(readme, "utf-8"), "# Demo\n\n第一版\n")
+  const versions = await store.list(skillPath, "Demo")
+  assert.deepEqual(versions.map(({ number }) => number), [5, 4])
+  assert.equal(await store.readFile(skillPath, "Demo", versions[1].id), "未保存的 D")
 })
 
 test("版本仓库可迁移到用户选择的外部位置", async () => {

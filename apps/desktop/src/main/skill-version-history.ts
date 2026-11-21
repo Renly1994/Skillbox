@@ -162,6 +162,20 @@ async function directorySize(rootPath: string): Promise<number> {
   return total
 }
 
+// IPC handlers construct stores on demand; serialize writes to the same on-disk history
+// across store instances so a concurrent save or retention change cannot race a restore.
+const pendingHistoryWrites = new Map<string, Promise<unknown>>()
+
+function withHistoryWrite<T>(directory: string, operation: () => Promise<T>): Promise<T> {
+  const key = pathKey(directory)
+  const previous = pendingHistoryWrites.get(key)
+  const current = (previous ?? Promise.resolve()).catch(() => {}).then(operation)
+  pendingHistoryWrites.set(key, current)
+  return current.finally(() => {
+    if (pendingHistoryWrites.get(key) === current) pendingHistoryWrites.delete(key)
+  })
+}
+
 export class SkillVersionStore {
   constructor(
     readonly rootPath: string,
@@ -209,38 +223,60 @@ export class SkillVersionStore {
     }
   }
 
-  private async writeManifest(manifest: SkillVersionManifest): Promise<void> {
+  private async writeManifest(manifest: SkillVersionManifest, requireAtomicReplace = false): Promise<void> {
     const directory = this.skillDirectory(manifest.skillPath)
     await fs.mkdir(directory, { recursive: true })
     const destination = path.join(directory, "history.json")
     const temporary = `${destination}.${crypto.randomUUID()}.tmp`
     try {
       await fs.writeFile(temporary, JSON.stringify(manifest, null, 2), "utf-8")
-      await renameOrCopyFile(temporary, destination, true)
+      if (requireAtomicReplace) await fs.rename(temporary, destination)
+      else await renameOrCopyFile(temporary, destination, true)
     } catch (error) {
       await fs.rm(temporary, { force: true }).catch(() => {})
       throw error
     }
   }
 
-  async create(
-    skillPath: string,
-    skillName: string,
+  private archivePath(skillPath: string, id: string): string {
+    return path.join(this.skillDirectory(skillPath), `${id}.zip`)
+  }
+
+  private async deleteArchives(skillPath: string, versions: StoredSkillVersionEntry[]): Promise<void> {
+    await Promise.all(versions.map(({ id }) =>
+      fs.rm(this.archivePath(skillPath, id), { force: true }).catch(() => {}),
+    ))
+  }
+
+  private hasUsableArchive(skillPath: string, id: string): boolean {
+    try {
+      const archive = new AdmZip(this.archivePath(skillPath, id))
+      return archive.getEntry("SKILL.md")?.isDirectory === false && archive.test()
+    } catch {
+      return false
+    }
+  }
+
+  // Prepare an archive and amend only the in-memory manifest. The caller owns the commit
+  // (and removes any new, unreferenced archives if it fails).
+  private async prepareVersion(
+    manifest: SkillVersionManifest,
+    sourcePath: string,
     reason: SkillVersionReason,
+    prepared: StoredSkillVersionEntry[],
+    verifyLatestArchive = false,
   ): Promise<CreateSkillVersionResult> {
-    const resolvedSkillPath = path.resolve(skillPath)
-    if (!(await pathExists(path.join(resolvedSkillPath, "SKILL.md")))) {
+    if (!(await pathExists(path.join(sourcePath, "SKILL.md")))) {
       throw new Error("Skill 缺少 SKILL.md，无法保存版本")
     }
 
-    await this.ensureRoot()
-    const [fingerprint, files, manifest] = await Promise.all([
-      createSkillContentFingerprint(resolvedSkillPath),
-      listFiles(resolvedSkillPath),
-      this.readManifest(resolvedSkillPath, skillName),
+    const [fingerprint, files] = await Promise.all([
+      createSkillContentFingerprint(sourcePath),
+      listFiles(sourcePath),
     ])
     const latest = manifest.versions[0]
-    if (latest?.fingerprint === fingerprint) {
+    if (latest?.fingerprint === fingerprint &&
+        (!verifyLatestArchive || this.hasUsableArchive(manifest.skillPath, latest.id))) {
       return {
         created: false,
         version: { ...latest, changes: compareFiles(latest.files, manifest.versions[1]?.files) },
@@ -248,18 +284,19 @@ export class SkillVersionStore {
     }
 
     const id = `${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID().slice(0, 8)}`
-    const directory = this.skillDirectory(resolvedSkillPath)
-    const archivePath = path.join(directory, `${id}.zip`)
+    const archivePath = this.archivePath(manifest.skillPath, id)
     const temporaryArchivePath = `${archivePath}.tmp`
-    await fs.mkdir(directory, { recursive: true })
+    await fs.mkdir(path.dirname(archivePath), { recursive: true })
 
     const archive = new AdmZip()
     for (const file of files) {
-      const absolutePath = path.join(resolvedSkillPath, ...file.relativePath.split("/"))
+      const absolutePath = path.join(sourcePath, ...file.relativePath.split("/"))
       archive.addLocalFile(absolutePath, path.posix.dirname(file.relativePath) === "." ? "" : path.posix.dirname(file.relativePath))
     }
+    let archiveSize: number
     try {
       archive.writeZip(temporaryArchivePath)
+      archiveSize = (await fs.stat(temporaryArchivePath)).size
       await renameOrCopyFile(temporaryArchivePath, archivePath)
     } catch (error) {
       await fs.rm(temporaryArchivePath, { force: true }).catch(() => {})
@@ -272,30 +309,43 @@ export class SkillVersionStore {
       createdAt: new Date().toISOString(),
       reason,
       fingerprint,
-      archiveSize: (await fs.stat(archivePath)).size,
+      archiveSize,
       fileCount: files.length,
       files,
     }
-    manifest.skillName = skillName
-    manifest.skillPath = resolvedSkillPath
+    prepared.push(stored)
     manifest.nextVersionNumber = stored.number + 1
     manifest.versions.unshift(stored)
-
-    const removed = manifest.versions.splice(Math.max(1, this.maxVersionsPerSkill))
-    try {
-      await this.writeManifest(manifest)
-    } catch (error) {
-      await fs.rm(archivePath, { force: true }).catch(() => {})
-      throw error
-    }
-    await Promise.all(removed.map((version) =>
-      fs.rm(path.join(directory, `${version.id}.zip`), { force: true }).catch(() => {}),
-    ))
-
     return {
       created: true,
-      version: { ...stored, changes: compareFiles(files, manifest.versions[1]?.files) },
+      version: { ...stored, changes: compareFiles(files, latest?.files) },
     }
+  }
+
+  async create(
+    skillPath: string,
+    skillName: string,
+    reason: SkillVersionReason,
+  ): Promise<CreateSkillVersionResult> {
+    const resolvedSkillPath = path.resolve(skillPath)
+    return withHistoryWrite(this.skillDirectory(resolvedSkillPath), async () => {
+      const manifest = await this.readManifest(resolvedSkillPath, skillName)
+      manifest.skillName = skillName
+      manifest.skillPath = resolvedSkillPath
+      const prepared: StoredSkillVersionEntry[] = []
+      try {
+        const result = await this.prepareVersion(manifest, resolvedSkillPath, reason, prepared)
+        if (!result.created) return result
+        await this.ensureRoot()
+        const removed = manifest.versions.splice(Math.max(1, this.maxVersionsPerSkill))
+        await this.writeManifest(manifest)
+        await this.deleteArchives(resolvedSkillPath, removed)
+        return result
+      } catch (error) {
+        await this.deleteArchives(resolvedSkillPath, prepared)
+        throw error
+      }
+    })
   }
 
   async list(skillPath: string, skillName: string): Promise<SkillVersionEntry[]> {
@@ -312,19 +362,19 @@ export class SkillVersionStore {
     for (const entry of entries) {
       if (!entry.isDirectory()) continue
       const directory = path.join(this.rootPath, entry.name)
-      try {
-        const manifest = JSON.parse(
-          await fs.readFile(path.join(directory, "history.json"), "utf-8"),
-        ) as SkillVersionManifest
-        const removed = manifest.versions.splice(Math.max(1, this.maxVersionsPerSkill))
-        if (removed.length === 0) continue
-        await this.writeManifest(manifest)
-        await Promise.all(removed.map((version) =>
-          fs.rm(path.join(directory, `${version.id}.zip`), { force: true }).catch(() => {}),
-        ))
-      } catch {
-        // 忽略非版本目录或损坏的历史索引，避免影响其他 Skill。
-      }
+      await withHistoryWrite(directory, async () => {
+        try {
+          const manifest = JSON.parse(
+            await fs.readFile(path.join(directory, "history.json"), "utf-8"),
+          ) as SkillVersionManifest
+          const removed = manifest.versions.splice(Math.max(1, this.maxVersionsPerSkill))
+          if (removed.length === 0) return
+          await this.writeManifest(manifest)
+          await this.deleteArchives(manifest.skillPath, removed)
+        } catch {
+          // 忽略非版本目录或损坏的历史索引，避免影响其他 Skill。
+        }
+      })
     }
   }
 
@@ -334,47 +384,81 @@ export class SkillVersionStore {
     versionId: string,
     relativePath = "SKILL.md",
   ): Promise<string | null> {
-    const manifest = await this.readManifest(path.resolve(skillPath), skillName)
-    if (!manifest.versions.some((version) => version.id === versionId)) {
-      throw new Error("找不到这个历史版本")
-    }
-    const archive = new AdmZip(path.join(this.skillDirectory(skillPath), `${versionId}.zip`))
-    const entry = archive.getEntry(normalizeArchivePath(relativePath))
-    return entry ? entry.getData().toString("utf-8") : null
+    return withHistoryWrite(this.skillDirectory(skillPath), async () => {
+      const manifest = await this.readManifest(path.resolve(skillPath), skillName)
+      if (!manifest.versions.some((version) => version.id === versionId)) {
+        throw new Error("找不到这个历史版本")
+      }
+      const archive = new AdmZip(this.archivePath(skillPath, versionId))
+      const entry = archive.getEntry(normalizeArchivePath(relativePath))
+      return entry ? entry.getData().toString("utf-8") : null
+    })
   }
 
   async restore(skillPath: string, skillName: string, versionId: string): Promise<void> {
     const resolvedSkillPath = path.resolve(skillPath)
-    const manifest = await this.readManifest(resolvedSkillPath, skillName)
-    if (!manifest.versions.some((version) => version.id === versionId)) {
-      throw new Error("找不到这个历史版本")
-    }
+    return withHistoryWrite(this.skillDirectory(resolvedSkillPath), async () => {
+      const manifest = await this.readManifest(resolvedSkillPath, skillName)
+      if (!manifest.versions.some((version) => version.id === versionId)) {
+        throw new Error("找不到这个历史版本")
+      }
+      manifest.skillName = skillName
+      manifest.skillPath = resolvedSkillPath
 
-    const parent = path.dirname(resolvedSkillPath)
-    const stagingPath = path.join(parent, `.skillbox-restore-${crypto.randomUUID()}`)
-    const rollbackPath = path.join(parent, `.skillbox-rollback-${crypto.randomUUID()}`)
-    const archive = new AdmZip(path.join(this.skillDirectory(resolvedSkillPath), `${versionId}.zip`))
-    let originalMoved = false
-
-    try {
-      await fs.mkdir(stagingPath, { recursive: true })
-      archive.extractAllTo(stagingPath, true)
-      if (!(await pathExists(path.join(stagingPath, "SKILL.md")))) {
+      const parent = path.dirname(resolvedSkillPath)
+      const stagingPath = path.join(parent, `.skillbox-restore-${crypto.randomUUID()}`)
+      const rollbackPath = path.join(parent, `.skillbox-rollback-${crypto.randomUUID()}`)
+      const prepared: StoredSkillVersionEntry[] = []
+      const archive = new AdmZip(this.archivePath(resolvedSkillPath, versionId))
+      if (archive.getEntry("SKILL.md")?.isDirectory !== false) {
         throw new Error("历史版本缺少 SKILL.md，无法恢复")
       }
-      await fs.rename(resolvedSkillPath, rollbackPath)
-      originalMoved = true
-      await fs.rename(stagingPath, resolvedSkillPath)
-      originalMoved = false
-      await fs.rm(rollbackPath, { recursive: true, force: true }).catch(() => {})
-    } catch (error) {
-      await fs.rm(stagingPath, { recursive: true, force: true }).catch(() => {})
-      if (originalMoved) {
-        await fs.rm(resolvedSkillPath, { recursive: true, force: true }).catch(() => {})
-        await fs.rename(rollbackPath, resolvedSkillPath).catch(() => {})
+      let originalMoved = false
+      let stagedMoved = false
+      let removed: StoredSkillVersionEntry[] = []
+
+      try {
+        await fs.mkdir(stagingPath, { recursive: true })
+        archive.extractAllTo(stagingPath, true)
+        if (!(await fs.stat(path.join(stagingPath, "SKILL.md")).catch(() => null))?.isFile()) {
+          throw new Error("历史版本缺少 SKILL.md，无法恢复")
+        }
+
+        // Keep the selected archive and all older history until the swap and index commit.
+        await this.prepareVersion(manifest, resolvedSkillPath, "initial", prepared, true)
+        await this.prepareVersion(manifest, stagingPath, "restore", prepared)
+        // Both the recovered version and its undo must fit (the UI allows at least three).
+        removed = manifest.versions.splice(Math.max(2, this.maxVersionsPerSkill))
+
+        await fs.rename(resolvedSkillPath, rollbackPath)
+        originalMoved = true
+        await fs.rename(stagingPath, resolvedSkillPath)
+        stagedMoved = true
+        if (prepared.length > 0 || removed.length > 0) {
+          // A failed index write must leave the previous index intact for rollback.
+          await this.writeManifest(manifest, true)
+        }
+      } catch (error) {
+        if (originalMoved) {
+          try {
+            if (stagedMoved) await fs.rename(resolvedSkillPath, stagingPath)
+            await fs.rename(rollbackPath, resolvedSkillPath)
+          } catch (rollbackError) {
+            // Do not delete the original directory or its prepared backup if rollback fails.
+            throw new Error(`恢复未完成，且无法回退。原始文件保留在：${rollbackPath}`, {
+              cause: new AggregateError([error, rollbackError]),
+            })
+          }
+        }
+        await this.deleteArchives(resolvedSkillPath, prepared)
+        throw error
+      } finally {
+        await fs.rm(stagingPath, { recursive: true, force: true }).catch(() => {})
       }
-      throw error
-    }
+
+      await fs.rm(rollbackPath, { recursive: true, force: true }).catch(() => {})
+      await this.deleteArchives(resolvedSkillPath, removed)
+    })
   }
 
   async info(): Promise<SkillVersionStorageInfo> {

@@ -503,6 +503,8 @@ const zhToEn: Record<string, string> = {
   读取版本正文失败: "Failed to load version content",
   保存当前版本失败: "Failed to save the current version",
   恢复版本失败: "Failed to restore the version",
+  "版本已恢复。": "Version restored.",
+  "版本已恢复，但 Skill 列表刷新失败，请手动刷新。": "Version restored, but the skill list could not refresh. Please refresh it manually.",
   关联来源: "Link source",
   更改来源: "Change source",
   "关联 Skill 来源": "Link Skill source",
